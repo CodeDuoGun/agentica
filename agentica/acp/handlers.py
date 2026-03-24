@@ -212,6 +212,24 @@ class ACPHandlers:
         """Handle exit notification (no response)"""
         logger.info("ACP exit requested")
         self._initialized = False
+
+    def handle_ping(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle ping / health-check request.
+
+        Returns server status and version so IDEs and monitors can confirm
+        the ACP server is alive and responding.
+        """
+        import time
+        try:
+            from agentica.version import __version__
+        except ImportError:
+            __version__ = "unknown"
+        return {
+            "status": "ok",
+            "initialized": self._initialized,
+            "version": __version__,
+            "timestamp": time.time(),
+        }
     
     def handle_tools_list(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle tools/list request"""

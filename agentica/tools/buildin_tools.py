@@ -931,6 +931,27 @@ class BuiltinExecuteTool(Tool):
                     logger.warning(f"Sandbox: blocked command: {command[:100]}")
                     return "Error: Sandbox blocked this command for security reasons."
 
+            # Sandbox: check allowed_commands whitelist (prefix match on first token)
+            # Only enforced when allowed_commands is explicitly set (non-None).
+            allowed = self._sandbox_config.allowed_commands
+            if allowed is not None:
+                # Extract the first token (bare executable name, strip path prefix)
+                first_token = cmd_lower.split()[0] if cmd_lower.split() else ""
+                # Normalize: strip leading path (e.g. "/usr/bin/python3" → "python3")
+                first_token_base = os.path.basename(first_token)
+                if not any(
+                    first_token_base == a.lower() or first_token_base.startswith(a.lower())
+                    for a in allowed
+                ):
+                    logger.warning(
+                        f"Sandbox: command '{first_token_base}' not in allowed_commands "
+                        f"{allowed}: {command[:100]}"
+                    )
+                    return (
+                        f"Error: Sandbox blocked this command — '{first_token_base}' is not "
+                        f"in the allowed_commands list: {allowed}"
+                    )
+
         logger.debug(f"Executing command: {command}")
         cwd = str(self._work_dir) if self._work_dir else None
         proc = None
@@ -1516,6 +1537,26 @@ class BuiltinTaskTool(Tool):
         # Get registry
         registry = SubagentRegistry()
 
+        # Compute current nesting depth from parent agent's context.
+        # Each spawned subagent inherits depth + 1 via its context dict.
+        _MAX_TASK_DEPTH = 5
+        current_depth = 0
+        if self._parent_agent is not None and self._parent_agent.context:
+            current_depth = int(self._parent_agent.context.get("_task_depth", 0))
+
+        if current_depth >= _MAX_TASK_DEPTH:
+            logger.warning(
+                f"task() blocked: max recursion depth {_MAX_TASK_DEPTH} reached "
+                f"(parent agent: {getattr(self._parent_agent, 'name', 'unknown')})"
+            )
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Max subagent nesting depth ({_MAX_TASK_DEPTH}) reached. "
+                    "Complete your task directly without further delegation."
+                ),
+            }, ensure_ascii=False)
+
         # Check if we're already in a subagent (prevent nesting)
         if self._parent_agent is not None:
             parent_agent_id = self._parent_agent.agent_id
@@ -1595,6 +1636,8 @@ class BuiltinTaskTool(Tool):
                 tools=subagent_tools,
                 prompt_config=PromptConfig(markdown=True),
                 tool_config=ToolConfig(tool_call_limit=config.tool_call_limit),
+                # Propagate task depth so nested task() calls can detect recursion limit
+                context={"_task_depth": current_depth + 1},
             )
 
             # Conditionally inherit workspace from parent

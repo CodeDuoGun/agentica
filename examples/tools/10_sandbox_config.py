@@ -129,6 +129,55 @@ async def demo_sandbox_execute_tool():
     print(f"  (timeout is enforced but we skip the slow test for demo speed)")
 
 
+async def demo_sandbox_allowed_commands():
+    """Demonstrate allowed_commands whitelist (new feature).
+
+    When allowed_commands is set, ONLY commands whose first token matches
+    one of the allowed prefixes are permitted. Everything else is blocked.
+    This is useful for AI coding agents where you want to restrict execution
+    to a known safe set (e.g. python, pytest, git).
+    """
+    print("\n" + "=" * 60)
+    print("Demo 2b: SandboxConfig.allowed_commands whitelist")
+    print("=" * 60)
+
+    sandbox = SandboxConfig(
+        enabled=True,
+        allowed_commands=["python", "pytest", "echo"],  # only these prefixes allowed
+    )
+
+    exec_tool = BuiltinExecuteTool(work_dir=tempfile.mkdtemp(), sandbox_config=sandbox)
+
+    # Test 1: Allowed command — python
+    print("\n[Test 1] Allowed command (python3 --version):")
+    result = await exec_tool.execute(command="python3 --version")
+    print(f"  Output: {result.strip()}")
+
+    # Test 2: Allowed command — echo
+    print("\n[Test 2] Allowed command (echo):")
+    result = await exec_tool.execute(command="echo hello")
+    print(f"  Output: {result.strip()}")
+
+    # Test 3: Blocked by whitelist — ls
+    print("\n[Test 3] Blocked command (ls — not in whitelist):")
+    result = await exec_tool.execute(command="ls /tmp")
+    print(f"  Result: {result[:200]}")
+
+    # Test 4: Blocked by whitelist — curl
+    print("\n[Test 4] Blocked command (curl — not in whitelist):")
+    result = await exec_tool.execute(command="curl https://example.com")
+    print(f"  Result: {result[:200]}")
+
+    # Test 5: Absolute path is normalized — /usr/bin/python3 → python3
+    print("\n[Test 5] Absolute path normalized (/usr/bin/python3 → python3, allowed):")
+    result = await exec_tool.execute(command="/usr/bin/python3 -c 'print(1+1)'")
+    print(f"  Output: {result.strip()}")
+
+    print(f"\n  allowed_commands={sandbox.allowed_commands}")
+    print("  None = no whitelist restriction (default behavior)")
+    print("  list = only commands with matching first-token prefix are permitted")
+
+
 # ---------------------------------------------------------------------------
 # 2. Agent-level sandbox demo (with LLM)
 # ---------------------------------------------------------------------------
@@ -221,6 +270,7 @@ async def main():
 
     await demo_sandbox_file_tool()
     await demo_sandbox_execute_tool()
+    await demo_sandbox_allowed_commands()
 
     if os.getenv("OPENAI_API_KEY"):
         await demo_agent_with_sandbox()
@@ -237,10 +287,14 @@ async def main():
     - blocked_paths: Path component matching (not substring) to prevent access
     - writable_dirs: Whitelist for file writes
     - blocked_commands: Regex boundary matching to block dangerous commands
+    - allowed_commands: Optional whitelist — only commands matching these prefixes run
+      (None = no restriction, list = only listed prefixes allowed)
     - max_execution_time: Timeout for command execution
 
     Usage:
       agent = Agent(sandbox_config=SandboxConfig(enabled=True, ...))
+      # Coding agent: only allow python/pytest/git
+      sandbox = SandboxConfig(enabled=True, allowed_commands=["python", "pytest", "git"])
 
     WARNING: This is NOT a true security sandbox. Use Docker/seccomp for untrusted code.
     """)

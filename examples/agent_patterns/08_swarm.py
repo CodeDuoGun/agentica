@@ -76,11 +76,14 @@ async def demo_parallel():
     result = await swarm.run("What are the top 3 best practices for building AI agents?")
 
     print(f"Mode: {result.mode}")
-    print(f"Time: {result.total_time}s")
+    print(f"Time: {result.total_time:.2f}s")
     print(f"Agent results: {len(result.agent_results)}")
     for r in result.agent_results:
         status = "OK" if r["success"] else "FAILED"
-        print(f"  - {r['agent_name']}: [{status}] {r['content'][:80]}...")
+        name = r.get("agent", "?")
+        tokens = r.get("total_tokens", 0)
+        token_str = f"  [{tokens} tokens]" if tokens else ""
+        print(f"  - {name}: [{status}]{token_str} {r['content'][:80]}...")
 
     print(f"\nSynthesized response:\n{result.content[:500]}...")
 
@@ -114,7 +117,7 @@ async def demo_autonomous():
     for r in result.agent_results:
         status = "OK" if r["success"] else "FAILED"
         subtask = r.get("subtask", "N/A")
-        print(f"  - {r['agent_name']}: [{status}] subtask={subtask[:60]}")
+        print(f"  - {r['agent']}: [{status}] subtask={subtask[:60]}")
 
     print(f"\nSynthesized response:\n{result.content[:800]}...")
 

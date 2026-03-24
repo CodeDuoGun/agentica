@@ -1,7 +1,7 @@
 import json
 from time import time
 from typing import Optional, Any, Dict, List, Union, Sequence
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from agentica.media import AudioResponse
 from agentica.utils.log import logger
 
@@ -23,6 +23,18 @@ class Message(BaseModel):
     # The role of the message author.
     # One of system, user, assistant, or tool.
     role: str
+
+    VALID_ROLES: frozenset = frozenset({"system", "user", "assistant", "tool"})
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        _valid = frozenset({"system", "user", "assistant", "tool"})
+        if v not in _valid:
+            raise ValueError(
+                f"Invalid message role '{v}'. Must be one of: {sorted(_valid)}"
+            )
+        return v
     # The contents of the message. content is required for all messages,
     # and may be null for assistant messages with function calls.
     content: Optional[Union[List[Any], str]] = None

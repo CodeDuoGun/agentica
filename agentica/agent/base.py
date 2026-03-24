@@ -129,6 +129,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
     stream: Optional[bool] = field(default=None, init=False, repr=False)
     stream_intermediate_steps: bool = field(default=False, init=False, repr=False)
     _cancelled: bool = field(default=False, init=False, repr=False)
+    _running: bool = field(default=False, init=False, repr=False)
 
     # Run-level hooks (set per-run via run(hooks=...))
     _run_hooks: Optional[RunHooks] = field(default=None, init=False, repr=False)
@@ -221,6 +222,7 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
         self.stream = None
         self.stream_intermediate_steps = False
         self._cancelled = False
+        self._running = False
         self._run_hooks = None
         self._default_run_hooks = None
         self._tool_runtime_configs: Dict[str, ToolRuntimeConfig] = {}
@@ -308,12 +310,8 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             mcp_tool = McpTool.from_config(config_path=config.config_path)
 
             async def init_mcp():
-                if isinstance(mcp_tool, CompositeMultiMcpTool):
-                    await mcp_tool.__aenter__()
-                    await mcp_tool.__aexit__(None, None, None)
-                else:
-                    await mcp_tool.__aenter__()
-                    await mcp_tool.__aexit__(None, None, None)
+                await mcp_tool.__aenter__()
+                await mcp_tool.__aexit__(None, None, None)
 
             try:
                 loop = asyncio.get_running_loop()
@@ -597,6 +595,13 @@ class Agent(PromptsMixin, TeamMixin, ToolsMixin, PrinterMixin):
             logger.debug("Model not set, Using OpenAIChat as default")
             self.model = OpenAIChat()
         logger.debug(f"Agent, using model: {self.model}")
+
+        # Clear previously registered tools/functions to prevent accumulation
+        # across multiple run() calls on the same Agent instance.
+        if self.model.functions:
+            self.model.functions.clear()
+        if self.model.tools:
+            self.model.tools.clear()
 
         # Set agent reference on model (for lifecycle hooks in tool execution)
         import weakref

@@ -164,6 +164,11 @@ class WorkingMemory(BaseModel):
     messages: List[Message] = []
     update_system_message_on_change: bool = False
 
+    # Soft upper-bound on stored messages to prevent unbounded memory growth.
+    # When exceeded, FIFO eviction is applied (system message is always preserved).
+    # Set to 0 to disable the limit.
+    max_messages: int = 200
+
     create_session_summary: bool = False
     update_session_summary_after_run: bool = True
     summary: Optional[SessionSummary] = None
@@ -260,8 +265,20 @@ class WorkingMemory(BaseModel):
                 self.messages.insert(0, message)
 
     def add_message(self, message: Message) -> None:
-        """Add a Message to the messages list."""
+        """Add a Message to the messages list.
+
+        Enforces max_messages soft limit: when the list exceeds the limit,
+        non-system messages are evicted from the front (FIFO) until within budget.
+        System messages (role='system') are always preserved.
+        """
         self.messages.append(message)
+        if self.max_messages > 0 and len(self.messages) > self.max_messages:
+            # Separate system messages from evictable messages
+            evictable = [i for i, m in enumerate(self.messages) if m.role != "system"]
+            overflow = len(self.messages) - self.max_messages
+            # Evict oldest non-system messages
+            to_remove = set(evictable[:overflow])
+            self.messages = [m for i, m in enumerate(self.messages) if i not in to_remove]
 
     def add_messages(self, messages: List[Message]) -> None:
         """Add a list of messages to the messages list."""

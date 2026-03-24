@@ -135,6 +135,14 @@ class SandboxConfig:
             Uses path component matching (not substring) to avoid false positives.
         blocked_commands: Shell command patterns that are blocked from execution.
             Uses regex boundary matching to reduce false positives.
+        allowed_commands: Optional whitelist of allowed command prefixes.
+            If set (non-None), ONLY commands whose first token matches one of
+            these prefixes are permitted. None means no whitelist restriction
+            (all commands allowed, subject to blocked_commands).
+            Example: ["python", "pip", "git", "pytest"] restricts the agent to
+            only run Python/pip/git/pytest commands.
+            NOTE: This is prefix-matched against the first token of the command,
+            so "python" allows both "python script.py" and "python3 -c '...'".
         max_execution_time: Maximum seconds for a single command execution
     """
     enabled: bool = False
@@ -148,4 +156,5 @@ class SandboxConfig:
         ":(){ :|:& };:", "chmod -R 777 /",
         "> /dev/sda", "curl|sh", "curl |sh", "wget|sh", "wget |sh",
     ])
-    max_execution_time: int = 120
+    allowed_commands: Optional[List[str]] = None
+    max_execution_time: int = 300

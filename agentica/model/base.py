@@ -397,9 +397,9 @@ class Model(ABC):
             function_call_output: Optional[Union[List[Any], str]] = ""
             if isinstance(function_call.result, (GeneratorType, collections.abc.Iterator)):
                 for item in function_call.result:
-                    function_call_output += item
+                    function_call_output += str(item)
                     if function_call.function.show_result:
-                        yield ModelResponse(content=item)
+                        yield ModelResponse(content=str(item))
             else:
                 function_call_output = function_call.result
                 # Ensure output is str or list for Message.content validation

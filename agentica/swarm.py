@@ -69,6 +69,76 @@ class SwarmResult:
     total_time: float = 0.0
 
 
+def _clone_agent_for_task(source: Any) -> Any:
+    """Create an isolated Agent clone for a single Swarm subtask.
+
+    The clone shares all *configuration* (model id, api_key, instructions,
+    tools, knowledge, workspace, sandbox_config, prompt_config, tool_config)
+    with the source agent but gets its own isolated *runtime state*:
+      - new agent_id (so _running flags don't collide)
+      - fresh WorkingMemory (no shared conversation history)
+      - fresh Runner instance (independent run_id / run_response)
+      - independent Model copy (own tool registry, metrics, HTTP client)
+
+    This allows Swarm autonomous mode to dispatch multiple subtasks to
+    logically the same agent without triggering the concurrent-reuse warning
+    and without shared-state corruption.
+
+    The clone is ephemeral — created per-task, discarded after the task finishes.
+    """
+    from agentica.agent import Agent
+    from agentica.memory import WorkingMemory
+
+    # Shallow-copy the model so each clone has its own tool registry,
+    # metrics dict, and can create its own HTTP client on demand.
+    # We reset runtime fields that must not be shared between concurrent runs.
+    src_model = getattr(source, 'model', None)
+    if src_model is not None:
+        try:
+            cloned_model = src_model.model_copy()
+        except AttributeError:
+            import copy
+            cloned_model = copy.copy(src_model)
+        # Reset per-run state so add_tool() in update_model() starts clean
+        cloned_model.tools = None
+        cloned_model.functions = None
+        cloned_model.tool_choice = None
+        cloned_model.metrics = {}
+        # Force fresh HTTP client (the original belongs to the source agent)
+        for attr in ('client', 'http_client', 'async_client'):
+            if hasattr(cloned_model, attr):
+                setattr(cloned_model, attr, None)
+    else:
+        cloned_model = None
+
+    clone = Agent(
+        model=cloned_model,
+        name=source.name,                          # keep same name for logging
+        description=getattr(source, 'description', None),
+        instructions=source.instructions,
+        tools=source.tools,                        # shared Tool objects (stateless)
+        knowledge=getattr(source, 'knowledge', None),
+        team=getattr(source, 'team', None),
+        workspace=getattr(source, 'workspace', None),
+        work_dir=getattr(source, 'work_dir', None),
+        response_model=getattr(source, 'response_model', None),
+        add_history_to_messages=source.add_history_to_messages,
+        history_window=source.history_window,
+        structured_outputs=source.structured_outputs,
+        debug=source.debug,
+        tracing=source.tracing,
+        hooks=source.hooks,
+        prompt_config=source.prompt_config,
+        tool_config=source.tool_config,
+        long_term_memory_config=source.long_term_memory_config,
+        team_config=source.team_config,
+        sandbox_config=getattr(source, 'sandbox_config', None),
+        working_memory=WorkingMemory(),            # fresh, isolated
+        context=dict(source.context) if source.context else None,
+    )
+    return clone
+
+
 class Swarm:
     """Multi-agent parallel autonomous collaboration system.
 
@@ -157,6 +227,13 @@ class Swarm:
         """Run all agents on the same task in parallel, merge results."""
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
+        def _extract_token_count(metrics: Dict[str, Any], key: str) -> int:
+            """Extract token count, handling both scalar and list values."""
+            val = metrics.get(key, 0)
+            if isinstance(val, list):
+                return sum(val)
+            return val if isinstance(val, int) else 0
+
         async def _run_agent(agent):
             async with semaphore:
                 agent_name = agent.name or "unnamed"
@@ -165,16 +242,35 @@ class Swarm:
                     content = response.content if response and response.content else ""
                     if not isinstance(content, str):
                         content = json.dumps(content, ensure_ascii=False)
-                    return {"agent_name": agent_name, "content": content, "success": True}
+                    # Collect token metrics from response
+                    metrics: Dict[str, Any] = response.metrics or {} if response else {}
+                    return {
+                        "agent": agent_name,
+                        "content": content,
+                        "success": True,
+                        "input_tokens": _extract_token_count(metrics, "input_tokens"),
+                        "output_tokens": _extract_token_count(metrics, "output_tokens"),
+                        "total_tokens": _extract_token_count(metrics, "total_tokens"),
+                    }
                 except Exception as e:
                     logger.error(f"Swarm agent '{agent_name}' failed: {e}")
-                    return {"agent_name": agent_name, "content": str(e), "success": False}
+                    return {"agent": agent_name, "content": str(e), "success": False,
+                            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
         results = await asyncio.gather(*[_run_agent(a) for a in self.agents])
         agent_results = list(results)
 
         # Synthesize results
         synthesized = await self._synthesize(task, agent_results, config)
+
+        # Aggregate metrics across all sub-agents
+        total_input = sum(r.get("input_tokens", 0) for r in agent_results)
+        total_output = sum(r.get("output_tokens", 0) for r in agent_results)
+        total_tokens = sum(r.get("total_tokens", 0) for r in agent_results)
+        logger.debug(
+            f"Swarm parallel completed: {len(agent_results)} agents, "
+            f"total_tokens={total_tokens} (in={total_input}, out={total_output})"
+        )
         return SwarmResult(content=synthesized, agent_results=agent_results)
 
     async def _run_autonomous(self, task: str, config: Optional[RunConfig] = None) -> SwarmResult:
@@ -188,27 +284,34 @@ class Swarm:
             return await self._run_parallel(task, config)
 
         # Step 2: Execute assignments in parallel
+        # Each assignment gets a cloned Agent with isolated runtime state so that
+        # the same logical agent (e.g. "coder") can handle multiple subtasks
+        # concurrently without sharing mutable state (run_id, run_response, model.functions).
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def _run_assignment(assignment: Dict):
             async with semaphore:
                 agent_name = assignment.get("agent_name", "")
                 subtask = assignment.get("subtask", "")
-                agent = self._agent_map.get(agent_name)
-                if agent is None:
+                source_agent = self._agent_map.get(agent_name)
+                if source_agent is None:
                     return {
-                        "agent_name": agent_name,
+                        "agent": agent_name,
                         "subtask": subtask,
                         "content": f"Agent '{agent_name}' not found in swarm",
                         "success": False,
                     }
+                # Clone the agent for this task to isolate runtime state.
+                # Each clone shares configuration (model id, instructions, tools)
+                # but gets its own agent_id, working_memory, and Runner instance.
+                agent = _clone_agent_for_task(source_agent)
                 try:
                     response = await agent.run(subtask, config=config)
                     content = response.content if response and response.content else ""
                     if not isinstance(content, str):
                         content = json.dumps(content, ensure_ascii=False)
                     return {
-                        "agent_name": agent_name,
+                        "agent": agent_name,
                         "subtask": subtask,
                         "content": content,
                         "success": True,
@@ -216,7 +319,7 @@ class Swarm:
                 except Exception as e:
                     logger.error(f"Swarm agent '{agent_name}' failed on subtask: {e}")
                     return {
-                        "agent_name": agent_name,
+                        "agent": agent_name,
                         "subtask": subtask,
                         "content": str(e),
                         "success": False,
@@ -321,7 +424,7 @@ class Swarm:
         # Build results summary, marking failures explicitly
         results_text = ""
         for r in agent_results:
-            name = r.get("agent_name", "unknown")
+            name = r.get("agent", "unknown")
             subtask = r.get("subtask", "")
             content = r.get("content", "")
             success = r.get("success", True)

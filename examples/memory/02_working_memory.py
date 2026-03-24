@@ -231,12 +231,61 @@ async def demo5_history_control():
         print(f"  {label}: {len(msgs)} messages")
 
 
+async def demo6_max_messages_limit():
+    """Demo 6: max_messages soft limit — prevent unbounded memory growth.
+
+    For long-running agents (CLI chat, ACP server), working_memory.messages
+    grows indefinitely. max_messages (default 200) sets a FIFO eviction limit:
+    - System messages are always preserved
+    - Oldest non-system messages are evicted when the limit is exceeded
+    """
+    print("=" * 60)
+    print("Demo 6: WorkingMemory.max_messages soft limit")
+    print("  Prevents unbounded memory growth in long sessions")
+    print("=" * 60)
+
+    from agentica.model.message import Message
+
+    # Small limit for demo purposes
+    memory = WorkingMemory(max_messages=5)
+
+    # Add a system message (always preserved)
+    memory.add_system_message(Message(role="system", content="You are a helpful assistant."))
+    print(f"\nAfter system message: {len(memory.messages)} messages")
+
+    # Add 8 user/assistant messages (will exceed limit of 5)
+    for i in range(1, 9):
+        memory.add_message(Message(role="user", content=f"User message {i}"))
+        print(f"  Added user message {i} → total: {len(memory.messages)}")
+
+    print(f"\nFinal message count: {len(memory.messages)} (limit=5, system preserved)")
+    print("Messages in memory:")
+    for msg in memory.messages:
+        print(f"  [{msg.role}] {msg.content}")
+
+    # Verify: system message always at front
+    assert memory.messages[0].role == "system", "System message must be preserved"
+    # Verify: total within limit
+    assert len(memory.messages) <= 5, f"Expected ≤5 messages, got {len(memory.messages)}"
+    print("\n✅ max_messages limit working correctly — oldest messages evicted, system preserved")
+
+    # Show how to configure via Agent
+    print("\nTo configure on Agent:")
+    print("  agent = Agent(")
+    print("      working_memory=WorkingMemory(max_messages=100),  # tighter limit")
+    print("      ...)")
+    print("  agent = Agent(")
+    print("      working_memory=WorkingMemory(max_messages=0),  # disabled (unlimited)")
+    print("      ...)")
+
+
 async def main():
     await demo1_basic_session()
     await demo2_session_isolation()
     await demo3_resume_conversation()
     await demo4_shared_memory()
     await demo5_history_control()
+    await demo6_max_messages_limit()
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -19,6 +19,7 @@ class ACPMethod(str, Enum):
     INITIALIZE = "initialize"
     SHUTDOWN = "shutdown"
     EXIT = "exit"
+    PING = "ping"  # Health check: returns {"status": "ok", "version": ...}
     
     # Tool methods
     TOOLS_LIST = "tools/list"

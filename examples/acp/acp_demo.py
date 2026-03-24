@@ -151,6 +151,14 @@ async def demo_acp_handlers():
     print(f"   Success: {not call_result['isError']}")
     print(f"   Content preview: {call_result['content'][:100]}...")
 
+    # Ping / health check
+    print("\n6. Ping (Health Check)")
+    ping_result = handlers.handle_ping({})
+    print(f"   Status: {ping_result['status']}")
+    print(f"   Version: {ping_result['version']}")
+    print(f"   Initialized: {ping_result['initialized']}")
+    print(f"   Timestamp: {ping_result['timestamp']}")
+
 
 async def demo_full_workflow():
     """Demo a complete workflow"""

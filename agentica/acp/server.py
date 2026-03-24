@@ -66,6 +66,7 @@ class ACPServer:
             ACPMethod.INITIALIZE: self._handlers.handle_initialize,
             ACPMethod.SHUTDOWN: self._handlers.handle_shutdown,
             ACPMethod.EXIT: self._handlers.handle_exit,
+            ACPMethod.PING: self._handlers.handle_ping,
             
             # Tools
             ACPMethod.TOOLS_LIST: self._handlers.handle_tools_list,

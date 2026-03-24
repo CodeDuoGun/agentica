@@ -591,6 +591,13 @@ class Claude(Model):
         response: AnthropicMessage = await self.invoke(messages=messages)
         metrics.response_timer.stop()
 
+        # Defensive: Anthropic should always return content, but guard against edge cases
+        if not response.content:
+            raise ValueError(
+                f"Anthropic API returned empty content for model '{self.id}'. "
+                "This may indicate a content filter or a transient API error."
+            )
+
         # -*- Create assistant message
         assistant_message, response_content, tool_ids = self.create_assistant_message(
             response=response, metrics=metrics

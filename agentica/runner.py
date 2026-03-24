@@ -91,7 +91,10 @@ class Runner:
             else:
                 fn_path.write_text(json.dumps(self.agent.run_response.content, indent=2, ensure_ascii=False))
         except Exception as e:
-            logger.warning(f"Failed to save output to file: {e}")
+            logger.warning(
+                f"Failed to save output to file '{save_response_to_file}': {e} "
+                f"[agent={self.agent.identifier}, run_id={self.agent.run_id}]"
+            )
 
     def _aggregate_metrics_from_run_messages(self, messages: List[Message]) -> Dict[str, Any]:
         aggregated_metrics: Dict[str, Any] = defaultdict(list)
@@ -151,6 +154,37 @@ class Runner:
         agent = self.agent
 
         async def _run_core() -> AsyncIterator[RunResponse]:
+            # Guard: warn if this agent instance is already running concurrently.
+            # Agent is not thread-safe — concurrent runs share mutable state
+            # (run_id, run_response, _run_hooks, _enabled_tools, model.functions).
+            # Swarm autonomous mode avoids this by cloning agents before parallel dispatch.
+            if getattr(agent, '_running', False):
+                logger.warning(
+                    f"Agent '{agent.identifier}' is already running. "
+                    "Concurrent reuse of the same Agent instance is not safe — "
+                    "run_id, run_response, and model state will be overwritten. "
+                    "Create a separate Agent instance for concurrent execution."
+                )
+
+            # Guard: early return if no input provided
+            if (
+                message is None
+                and (messages is None or len(messages) == 0)
+                and (add_messages is None or len(add_messages) == 0)
+            ):
+                logger.warning(
+                    f"Agent '{agent.identifier}' called with no message and no messages. "
+                    "Returning empty response."
+                )
+                yield RunResponse(
+                    run_id=str(uuid4()),
+                    agent_id=agent.agent_id,
+                    content="",
+                    event=RunEvent.run_response.value,
+                )
+                return
+
+            agent._running = True
             agent.stream = stream and agent.is_streamable
             agent.stream_intermediate_steps = stream_intermediate_steps and agent.stream
             agent.run_id = str(uuid4())
@@ -270,6 +304,21 @@ class Runner:
                 # --- Lifecycle: LLM end (non-stream) ---
                 if agent._run_hooks is not None:
                     await agent._run_hooks.on_llm_end(agent=agent, response=model_response)
+
+                # --- Context window usage warning ---
+                _used_tokens = getattr(agent.model, 'metrics', {}).get('total_tokens', [])
+                _window = getattr(agent.model, 'context_window', None)
+                if _window and _used_tokens:
+                    _total = sum(_used_tokens) if isinstance(_used_tokens, list) else _used_tokens
+                    _pct = _total / _window
+                    agent.run_response.metrics = agent.run_response.metrics or {}
+                    agent.run_response.metrics['context_window_pct'] = round(_pct, 3)
+                    if _pct >= 0.8:
+                        logger.warning(
+                            f"Agent '{agent.identifier}': context window usage is "
+                            f"{_pct:.0%} ({_total}/{_window} tokens). "
+                            "Consider summarizing or truncating conversation history."
+                        )
                 if agent.response_model is not None and agent.structured_outputs and model_response.parsed is not None:
                     agent.run_response.content = model_response.parsed
                     agent.run_response.content_type = agent.response_model.__name__
@@ -387,6 +436,7 @@ class Runner:
             # Clear query-level tool/skill filtering after run
             agent._enabled_tools = None
             agent._enabled_skills = None
+            agent._running = False
 
         trace_input = message if isinstance(message, str) else str(message) if message else None
         trace_name = agent.name or "agent-run"
@@ -524,7 +574,11 @@ class Runner:
                             agent.run_response.content = structured_output
                             agent.run_response.content_type = agent.response_model.__name__
                 except Exception as e:
-                    logger.warning(f"Failed to convert response to output model: {e}")
+                    logger.warning(
+                        f"Failed to convert response to output model "
+                        f"'{agent.response_model.__name__ if agent.response_model else None}': {e} "
+                        f"[agent={agent.identifier}, run_id={agent.run_id}]"
+                    )
 
         return run_response
 

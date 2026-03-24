@@ -341,10 +341,18 @@ class OpenAIChat(Model):
         response: Union[ChatCompletion, ParsedChatCompletion] = await self.invoke(messages=messages)
         metrics.response_timer.stop()
 
-        response_message: ChatCompletionMessage = response.choices[0].message
-        response_usage: Optional[CompletionUsage] = response.usage
+        # Defensive: validate choices is non-empty before indexing
+        if not response.choices:
+            raise ValueError(
+                f"OpenAI API returned empty choices for model '{self.id}'. "
+                "This may indicate a content filter, a quota issue, or a transient API error."
+            )
 
-        # Parse structured outputs
+        response_message: ChatCompletionMessage = response.choices[0].message
+        # Defensive: usage may be None when stream_options are not set or API omits it
+        response_usage: Optional[CompletionUsage] = getattr(response, "usage", None)
+
+        # Parse structured outputs — fallback to text content on validation failure
         try:
             if (
                     self.response_format is not None
@@ -355,7 +363,10 @@ class OpenAIChat(Model):
                 if parsed_object is not None:
                     model_response.parsed = parsed_object
         except Exception as e:
-            logger.warning(f"Error retrieving structured outputs: {e}")
+            logger.warning(
+                f"Structured output parse failed for model '{self.id}', "
+                f"falling back to text content: {e}"
+            )
 
         assistant_message = self.create_assistant_message(
             response_message=response_message, metrics=metrics, response_usage=response_usage
