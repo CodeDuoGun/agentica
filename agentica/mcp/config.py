@@ -59,24 +59,35 @@ class MCPConfig:
     def _load_config(self) -> None:
         """Load configuration from MCP config file.
         Supports both JSON and YAML formats.
+        Empty files are silently skipped (treated as no servers configured).
         """
         if not self.config_path or not os.path.exists(self.config_path):
             return
 
         try:
             with open(self.config_path, 'r', encoding='utf-8') as f:
-                # Determine file format based on extension
-                if self.config_path.lower().endswith(('.yaml', '.yml')):
-                    config = yaml.safe_load(f)
-                else:  # Default to JSON
-                    config = json.load(f)
+                content = f.read().strip()
+
+            # Empty file → no servers configured, nothing to do
+            if not content:
+                return
+
+            # Determine file format based on extension
+            if self.config_path.lower().endswith(('.yaml', '.yml')):
+                config = yaml.safe_load(content)
+            else:  # Default to JSON
+                config = json.loads(content)
+
+            # yaml.safe_load on whitespace-only content returns None
+            if not config:
+                return
 
             for name, server_config in config.get('mcpServers', {}).items():
                 # Check enable field, default to True if not specified
                 enable = server_config.get('enable', True)
                 if not enable:
                     continue  # Skip disabled MCP servers
-                
+
                 self.servers[name] = MCPServerConfig(
                     name=name,
                     url=server_config.get('url'),
