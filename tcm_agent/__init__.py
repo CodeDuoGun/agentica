@@ -13,19 +13,22 @@ Features:
 
 from tcm_agent.agent import TCMDiagnosisAgent
 from tcm_agent.knowledge import TCMKnowledgeBase, TCMKnowledgeGraph
-from tcm_agent.intention import IntentionRecognitionAgent, SymptomExtractor, PatientInfoExtractor
+from tcm_agent.intention import IntentionRecognitionAgent, PatientInfoExtractor
 from tcm_agent.system import TCMConsultationSystem, ConsultationSession, SessionStatus
 from tcm_agent.models import (
     SymptomInfo,
     DiagnosisInfo,
     TreatmentPlan,
     ConsultationState,
-    IntentionType,
+    IntentionCategory,
     IntentionResult,
     PatientInfo,
     PhysicalInfo,
     SyndromeType,
     ConsultationPhase,
+    ConsultationVisitType,
+    MedicalHistory,
+    ConsultationRecord,
     KGQueryResult,
 )
 
@@ -45,11 +48,14 @@ __all__ = [
     "DiagnosisInfo",
     "TreatmentPlan",
     "ConsultationState",
-    "IntentionType",
+    "IntentionCategory",
     "IntentionResult",
     "PatientInfo",
     "PhysicalInfo",
     "SyndromeType",
     "ConsultationPhase",
+    "ConsultationVisitType",
+    "MedicalHistory",
+    "ConsultationRecord",
     "KGQueryResult",
 ]

@@ -29,178 +29,169 @@ from tcm_agent.models import get_enum_value
 from agentica import QwenChat
 
 
-async def example_basic_chat():
-    """基础对话示例"""
-    print("=" * 60)
-    print("示例1: 基础问诊对话")
-    print("=" * 60)
-    
-    system = TCMConsultationSystem()
-    await system.start_session()
-    
-    responses = []
-    responses.append(await system.chat("你好，医生"))
-    print(f"用户: 你好，医生\n助手: {responses[0]}\n")
-    
-    responses.append(await system.chat("我最近总是失眠，睡不好觉"))
-    print(f"用户: 我最近总是失眠，睡不好觉\n助手: {responses[1]}\n")
-    
-    responses.append(await system.chat("有时候还会头晕，白天精神很差"))
-    print(f"用户: 有时候还会头晕，白天精神很差\n助手: {responses[2]}\n")
-    
-    responses.append(await system.chat("我今年35岁，男"))
-    print(f"用户: 我今年35岁，男\n助手: {responses[3]}\n")
-    
-    responses.append(await system.chat("请帮我分析一下这是什么情况"))
-    print(f"用户: 请帮我分析一下这是什么情况\n助手: {responses[4]}\n")
-    
-    responses.append(await system.chat("平时该怎么调理"))
-    print(f"用户: 平时该怎么调理\n助手: {responses[5]}\n")
-
-
 async def example_intention_recognition():
     """意图识别示例"""
     print("\n" + "=" * 60)
-    print("示例2: 意图识别")
+    print("示例1: 意图识别")
     print("=" * 60)
     
     agent = IntentionRecognitionAgent()
     
     test_inputs = [
-        "你好",
-        "我头疼",
-        "这是怎么回事？",
-        "怎么治疗比较好？",
-        "需要吃什么药？",
-        "平时要注意什么？",
-        "谢谢，再见",
+        "你好，医生",
+        "这个中药怎么煎？",
+        "我最近总是头疼，睡不着觉",
+        "帮我看看我是什么问题",
+        "今天天气真不错",
     ]
     
     for user_input in test_inputs:
         result = await agent.recognize(user_input)
-        print(f"输入: {user_input}")
-        print(f"意图: {get_enum_value(result.intention)} (置信度: {result.confidence:.2f})")
+        print(f"\n输入: {user_input}")
+        print(f"意图类别: {get_enum_value(result.category)}")
+        print(f"置信度: {result.confidence:.2f}")
+        print(f"推荐回复: {result.suggested_response or 'N/A'}")
 
 
-async def example_knowledge_query():
-    """知识库查询示例"""
+async def example_consultation_system():
+    """完整的问诊系统示例"""
     print("\n" + "=" * 60)
-    print("示例3: 知识库查询")
+    print("示例2: 完整问诊系统")
     print("=" * 60)
     
-    kb = TCMKnowledgeBase()
-    kb.initialize()
+    system = TCMConsultationSystem(max_turns=50, max_consultation_turns=30)
     
-    print("\n--- 查询1: 基于症状查询证型 ---")
-    results = kb.query_by_symptoms(["失眠", "心悸"], max_results=3)
-    for r in results:
-        print(f"症状: {r['symptom']}")
-        print(f"证型: {r['syndrome']['name']}")
-        print(f"描述: {r['syndrome']['description']}")
-        if r['syndrome'].get('related_prescriptions'):
-            print(f"推荐方剂: {[p['name'] for p in r['syndrome']['related_prescriptions']]}")
-        print()
-    
-    print("\n--- 查询2: 查询具体实体 ---")
-    entity_info = kb.query_by_entity_name("四君子汤")
-    print(f"实体: {entity_info['entity']['name']}")
-    print(f"描述: {entity_info['entity']['description']}")
-    print(f"组成: {entity_info['entity']['properties'].get('composition', [])}")
-    
-    print("\n--- 查询3: 语义搜索 ---")
-    search_results = kb.search_similar("补气健脾的方子", max_results=3)
-    for r in search_results:
-        print(f"实体: {r['entity']['name']}")
-        print(f"类型: {r['entity']['type']}")
-        print(f"匹配度: {r['score']:.2f}")
-        print()
-    
-    print("\n--- 查询4: 获取治疗建议 ---")
-    treatment = kb.get_treatment_recommendations("气虚")
-    print(f"治疗方案:")
-    print(f"- 生活方式: {treatment.get('lifestyle_advice', [])[:3]}")
-    print(f"- 饮食建议: {treatment.get('diet_advice', [])[:3]}")
-
-
-async def example_direct_agent():
-    """直接使用 Agent 示例"""
-    print("\n" + "=" * 60)
-    print("示例4: 直接使用问诊 Agent")
-    print("=" * 60)
-    
-    agent = TCMDiagnosisAgent(model=QwenChat(id="qwen-plus"))
+    await system.start_session()
+    print("助手: 您好！欢迎来到中医智能问诊系统。")
     
     messages = [
-        "医生你好",
-        "我最近总是觉得乏力，没精神",
-        "而且食欲不太好，吃什么都不香",
-        "还经常腹胀，大便也不正常",
-        "我今年42岁，女性",
-        "请帮我看看这是什么问题",
+        "我最近总是失眠，睡不着觉",
+        "30岁，男",
+        "头有点疼，白天没精神",
+        "没有过敏史",
+        "之前没有得过什么大病",
+        "无",
+        "没有其他补充了"
     ]
     
     for msg in messages:
         print(f"\n用户: {msg}")
-        response = await agent.run(msg)
-        print(f"助手: {response[:200]}..." if len(response) > 200 else f"助手: {response}")
+        response = await system.chat(msg)
+        if response:
+            print(f"助手: {response[:300]}..." if len(response) > 300 else f"助手: {response}")
+        else:
+            print("助手: [非医疗咨询，无回复]")
     
-    state = agent.get_state()
-    print(f"\n问诊状态:")
-    print(f"- 阶段: {get_enum_value(state.current_phase)}")
-    print(f"- 已收集症状: {[s.name for s in state.symptoms]}")
-    if state.diagnosis:
-        print(f"- 辨证: {get_enum_value(state.diagnosis.syndrome)}")
+    # 获取结构化病历
+    record = system.get_consultation_record()
+    if record:
+        print("\n" + "=" * 60)
+        print("结构化病历:")
+        print(f"- 就诊类型: {get_enum_value(record.visit_type)}")
+        print(f"- 主诉: {record.chief_complaint}")
+        print(f"- 症状数量: {len(record.symptoms)}")
+        print(f"- 过敏史: {', '.join(record.medical_history.allergies) or '无'}")
 
 
-async def example_diagnose_by_symptoms():
-    """基于症状诊断示例"""
+async def example_consultation_flow():
+    """问诊流程示例"""
     print("\n" + "=" * 60)
-    print("示例5: 基于症状诊断")
+    print("示例3: 问诊流程演示")
     print("=" * 60)
     
     system = TCMConsultationSystem()
     
-    symptoms = [
-        "失眠",
-        "心悸",
-        "健忘",
-        "乏力",
-        "面色萎黄",
+    # 设置病历生成回调
+    def on_record_generated(record):
+        print(f"\n[回调] 病历已生成: {record.chief_complaint}")
+    
+    system.set_record_callback(on_record_generated)
+    
+    await system.start_session()
+    
+    # 正常问诊流程
+    test_cases = [
+        # 普通咨询
+        ("这个降压药有什么副作用？", "general_medical"),
+        # 问诊
+        ("我最近总是胸闷气短", "consultation"),
+        ("45岁，男", "consultation"),
+        ("这种情况大概有三个月了", "consultation"),
+        ("没有过敏史", "consultation"),
+        # 非医疗咨询（不回复）
+        ("今天股票涨了吗？", "non_medical"),
     ]
     
-    patient_info = {
-        "age": 45,
-        "gender": "女",
-    }
+    for msg, expected_category in test_cases:
+        print(f"\n用户: {msg}")
+        print(f"预期类别: {expected_category}")
+        
+        response = await system.chat(msg)
+        
+        if response:
+            print(f"助手: {response[:200]}..." if len(response) > 200 else f"助手: {response}")
+        else:
+            print("助手: [无回复]")
+
+
+async def example_interruption_handling():
+    """中断处理示例"""
+    print("\n" + "=" * 60)
+    print("示例4: 中断场景处理")
+    print("=" * 60)
     
-    result = await system.diagnose_by_symptoms(symptoms, patient_info)
+    # 设置较小的轮数限制来演示中断
+    system = TCMConsultationSystem(max_turns=3, max_consultation_turns=3)
     
-    print(f"输入症状: {', '.join(symptoms)}")
-    print(f"\n诊断结果:")
-    print(f"- 证型: {result.get('syndrome')}")
-    print(f"- 分类: {result.get('category')}")
-    print(f"- 相关脏腑: {', '.join(result.get('related_organs', []))}")
-    print(f"- 常见症状: {', '.join(result.get('common_symptoms', [])[:5])}")
+    await system.start_session()
+    print("助手: 您好！欢迎来到中医智能问诊系统。")
     
-    if result.get('treatment', {}).get('herbal_prescriptions'):
-        print(f"\n推荐方剂:")
-        for p in result['treatment']['herbal_prescriptions']:
-            print(f"- {p['name']}: {p.get('indication', '')}")
+    messages = [
+        "我最近总是头疼",
+        "30岁",
+        "还有其他不舒服吗",
+    ]
+    
+    for msg in messages:
+        print(f"\n用户: {msg}")
+        response = await system.chat(msg)
+        if response:
+            print(f"助手: {response}")
+        
+        if system.current_session and system.current_session.status.value != "active":
+            print(f"\n会话状态: {system.current_session.status.value}")
+            print(f"中断原因: {system.current_session.interrupt_reason.value if system.current_session.interrupt_reason else 'N/A'}")
+            break
 
 
 async def main():
     """运行所有示例"""
-    print("中医问诊 Agent 使用示例")
+    print("=" * 60)
+    print("中医智能问诊系统 - 使用示例")
     print("=" * 60)
     
-    # await example_basic_chat()
-    # await example_intention_recognition()
-    # await example_knowledge_query()
-    await example_direct_agent()
-    # await example_diagnose_by_symptoms()
+    try:
+        await example_intention_recognition()
+    except Exception as e:
+        print(f"\n意图识别示例出错: {e}")
+    
+    try:
+        await example_consultation_system()
+    except Exception as e:
+        print(f"\n问诊系统示例出错: {e}")
+    
+    try:
+        await example_consultation_flow()
+    except Exception as e:
+        print(f"\n问诊流程示例出错: {e}")
+    
+    try:
+        await example_interruption_handling()
+    except Exception as e:
+        print(f"\n中断处理示例出错: {e}")
     
     print("\n" + "=" * 60)
-    print("所有示例运行完成！")
+    print("所有示例运行完成")
     print("=" * 60)
 
 

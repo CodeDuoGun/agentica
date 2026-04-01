@@ -6,6 +6,9 @@ TODO
 - [ ] Diagnosis agent, 目前回复内容过于冗余繁琐, 修改_build_system_prompt
 - [ ] 修改状态问题槽位信息
 - [ ] sessionid 
+- [ ] ConsultationRecord 结构化病历agent ，提示词
+- [ ] VisitTypeRecognitionAgent 去掉
+
 
 
 tcm_agent/
