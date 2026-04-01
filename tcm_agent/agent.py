@@ -13,7 +13,7 @@ TCM Diagnosis Agent - 多轮问诊 Agent
 from typing import Dict, Any, Optional, List, Callable
 from datetime import datetime
 
-from agentica import Agent, OpenAIChat
+from agentica import Agent, QwenChat
 from agentica.model.message import UserMessage, AssistantMessage
 
 from tcm_agent.models import (
@@ -21,6 +21,7 @@ from tcm_agent.models import (
     ConsultationPhase,
     IntentionType,
     SymptomInfo,
+    SymptomLocation,
     PatientInfo,
     PhysicalInfo,
     DiagnosisInfo,
@@ -29,6 +30,7 @@ from tcm_agent.models import (
 )
 from tcm_agent.knowledge import TCMKnowledgeBase
 from tcm_agent.intention import IntentionRecognitionAgent, SymptomExtractor, PatientInfoExtractor
+from log import logger
 
 
 class TCMDiagnosisAgent:
@@ -80,21 +82,27 @@ class TCMDiagnosisAgent:
             temperature: 生成温度
             enable_stream: 是否启用流式输出
         """
-        self.model = model or OpenAIChat(id="gpt-4o")
+        self.model = model or QwenChat(id="qwen-plus")
         self.knowledge_base = knowledge_base or TCMKnowledgeBase()
         self.knowledge_base.initialize()
         
-        self.intention_agent = IntentionRecognitionAgent(model=self.model, temperature=0.1)
-        self.symptom_extractor = SymptomExtractor(model=self.model, temperature=0.1)
-        self.patient_info_extractor = PatientInfoExtractor(model=self.model, temperature=0.1)
+        # 为不同的 Agent 创建独立的 model 实例，避免 response_format 相互覆盖
+        intention_model = model or QwenChat(id="qwen-plus")
+        symptom_model = QwenChat(id="qwen-plus")
+        patient_model = QwenChat(id="qwen-plus")
+        conversation_model = QwenChat(id="qwen-plus")
+        
+        self.intention_agent = IntentionRecognitionAgent(model=intention_model, temperature=0.1)
+        self.symptom_extractor = SymptomExtractor(model=symptom_model, temperature=0.1)
+        self.patient_info_extractor = PatientInfoExtractor(model=patient_model, temperature=0.1)
         
         self.state = ConsultationState()
-        self.conversation_agent = self._create_conversation_agent(temperature)
+        self.conversation_agent = self._create_conversation_agent(conversation_model, temperature)
     
-    def _create_conversation_agent(self, temperature: float) -> Agent:
+    def _create_conversation_agent(self, model: Any, temperature: float) -> Agent:
         """创建对话 Agent"""
         return Agent(
-            model=self.model,
+            model=model,
             name="TCMConsultationAgent",
             instructions=self._build_system_prompt(),
             add_history_to_messages=True,
@@ -154,13 +162,14 @@ class TCMDiagnosisAgent:
             str: Agent 响应
         """
         context = self._get_context()
+        logger.info(f"tcm Context: {context}")
         intention_result = await self.intention_agent.recognize(user_input, context)
-        
+        logger.info(f"Intention result: {intention_result}")
         self.state.intention = intention_result.intention
         self._add_to_history("user", user_input)
         
         response = await self._generate_response(user_input, intention_result)
-        
+        logger.info(f"diagnosis Response: {response}")
         self._add_to_history("assistant", response)
         self._update_phase()
         
@@ -193,7 +202,9 @@ class TCMDiagnosisAgent:
         intention_result: Any
     ) -> str:
         """生成响应"""
-        symptoms = await self.symptom_extractor.extract(user_input)
+        symptoms_raw = await self.symptom_extractor.extract(user_input)
+        logger.info(f"symptoms: {symptoms_raw}")
+        symptoms = self._normalize_symptoms(symptoms_raw)
         for symptom in symptoms:
             if symptom.name not in [s.name for s in self.state.symptoms]:
                 self.state.symptoms.append(symptom)
@@ -204,22 +215,24 @@ class TCMDiagnosisAgent:
         )
         self.state.patient_info = patient_info
         
-        if intention_result.intention == IntentionType.GREETING:
+        intention_value = self._get_intention_value(intention_result.intention)
+        
+        if intention_value == "greeting":
             return self.WELCOME_MESSAGE
         
-        elif intention_result.intention == IntentionType.GOODBYE:
+        elif intention_value == "goodbye":
             self.state.is_complete = True
             return "感谢您的咨询，祝您身体健康！如果有任何问题，欢迎随时来问诊。"
         
-        elif intention_result.intention == IntentionType.DIAGNOSIS_REQUEST:
+        elif intention_value == "diagnosis":
             return await self._generate_diagnosis_response()
         
-        elif intention_result.intention == IntentionType.TREATMENT_INQUIRY:
+        elif intention_value == "treatment":
             return await self._generate_treatment_response()
         
-        elif len(self.state.symptoms) < 3 and self.state.current_phase in [
-            ConsultationPhase.WELCOME,
-            ConsultationPhase.SYMPTOM_INQUIRY
+        elif len(self.state.symptoms) < 3 and self._get_phase_value(self.state.current_phase) in [
+            "welcome",
+            "symptom_inquiry"
         ]:
             return await self._generate_symptom_collection_response(intention_result)
         
@@ -228,7 +241,8 @@ class TCMDiagnosisAgent:
     
     async def _generate_response_stream(self, user_input: str, intention_result: Any):
         """流式生成响应"""
-        symptoms = await self.symptom_extractor.extract(user_input)
+        symptoms_raw = await self.symptom_extractor.extract(user_input)
+        symptoms = self._normalize_symptoms(symptoms_raw)
         for symptom in symptoms:
             if symptom.name not in [s.name for s in self.state.symptoms]:
                 self.state.symptoms.append(symptom)
@@ -243,6 +257,43 @@ class TCMDiagnosisAgent:
         self._add_to_history("assistant", response)
         
         yield response
+    
+    def _normalize_symptoms(self, symptoms_input: Any) -> List[SymptomInfo]:
+        """
+        标准化症状输入，确保返回 List[SymptomInfo]
+        
+        Args:
+            symptoms_input: 可能的症状数据（可能是字符串、字典、SymptomInfo对象等）
+            
+        Returns:
+            List[SymptomInfo]: 标准化的症状列表
+        """
+        if not symptoms_input:
+            return []
+        
+        result = []
+        items = symptoms_input if isinstance(symptoms_input, list) else [symptoms_input]
+        
+        for item in items:
+            try:
+                if isinstance(item, SymptomInfo):
+                    result.append(item)
+                elif isinstance(item, dict):
+                    # 处理 location 字段，确保是枚举值或 None
+                    processed_item = item.copy()
+                    if processed_item.get('location') is not None and isinstance(processed_item['location'], str):
+                        try:
+                            processed_item['location'] = SymptomLocation(processed_item['location'])
+                        except ValueError:
+                            processed_item['location'] = None
+                    result.append(SymptomInfo(**processed_item))
+                elif isinstance(item, str):
+                    result.append(SymptomInfo(name=item))
+            except Exception as e:
+                logger.warning(f"Failed to convert symptom item: {item}, error: {e}")
+                continue
+        
+        return result
     
     async def _generate_symptom_collection_response(self, intention_result: Any) -> str:
         """生成症状收集引导响应"""
@@ -259,7 +310,7 @@ class TCMDiagnosisAgent:
         prompt += f"""
         
 当前已收集的症状：{', '.join(symptom_names) if symptom_names else '暂无'}
-已识别的意图：{intention_result.intention.value}，置信度：{intention_result.confidence:.2f}
+已识别的意图：{self._get_intention_value(intention_result.intention)}，置信度：{intention_result.confidence:.2f}
 
 请根据以下策略生成回复：
 1. 如果症状不足3个，继续引导患者描述更多症状
@@ -307,11 +358,11 @@ class TCMDiagnosisAgent:
         if not self.state.diagnosis:
             await self._generate_diagnosis_response()
         
-        syndrome_name = self.state.diagnosis.syndrome.value if self.state.diagnosis.syndrome else "虚证"
+        syndrome_name = self._get_intention_value(self.state.diagnosis.syndrome) if self.state.diagnosis.syndrome else "虚证"
         
         patient_info_dict = {
             "age": self.state.patient_info.age,
-            "gender": self.state.patient_info.gender.value if self.state.patient_info.gender else None,
+            "gender": self._get_intention_value(self.state.patient_info.gender) if self.state.patient_info.gender else None,
             "constitution": self.state.patient_info.constitution,
         }
         
@@ -363,7 +414,7 @@ class TCMDiagnosisAgent:
         prompt = self._build_agent_prompt()
         prompt += f"""
         
-用户意图：{intention_result.intention.value}
+用户意图：{self._get_intention_value(intention_result.intention)}
 意图置信度：{intention_result.confidence:.2f}
 
 当前症状：{[s.name for s in self.state.symptoms]}
@@ -473,13 +524,13 @@ class TCMDiagnosisAgent:
     
     def _build_agent_prompt(self) -> str:
         """构建 Agent 提示词"""
-        phase_info = self.state.current_phase.value
+        phase_info = self._get_phase_value(self.state.current_phase)
         
         patient_info_parts = []
         if self.state.patient_info.age:
             patient_info_parts.append(f"年龄：{self.state.patient_info.age}")
         if self.state.patient_info.gender:
-            patient_info_parts.append(f"性别：{self.state.patient_info.gender.value}")
+            patient_info_parts.append(f"性别：{self._get_intention_value(self.state.patient_info.gender)}")
         
         symptoms_parts = [s.name for s in self.state.symptoms]
         
@@ -491,13 +542,30 @@ class TCMDiagnosisAgent:
     
     def _get_context(self) -> Dict[str, Any]:
         """获取上下文信息"""
+        intention_value = self._get_intention_value(self.state.intention)
         return {
-            "conversation_phase": self.state.current_phase.value,
+            "conversation_phase": self._get_phase_value(self.state.current_phase),
             "collected_symptoms": [s.name for s in self.state.symptoms],
-            "previous_intention": self.state.intention.value if self.state.intention != IntentionType.OTHER else None,
+            "previous_intention": intention_value if intention_value != "other" else None,
             "patient_age": self.state.patient_info.age,
-            "patient_gender": self.state.patient_info.gender.value if self.state.patient_info.gender else None,
+            "patient_gender": self._get_intention_value(self.state.patient_info.gender) if self.state.patient_info.gender else None,
         }
+    
+    def _get_intention_value(self, intention: Any) -> str:
+        """安全获取意图值，处理字符串或枚举对象"""
+        if isinstance(intention, str):
+            return intention
+        if hasattr(intention, 'value'):
+            return intention.value
+        return str(intention)
+    
+    def _get_phase_value(self, phase: Any) -> str:
+        """安全获取阶段值，处理字符串或枚举对象"""
+        if isinstance(phase, str):
+            return phase
+        if hasattr(phase, 'value'):
+            return phase.value
+        return str(phase)
     
     def _add_to_history(self, role: str, content: str) -> None:
         """添加对话历史"""
@@ -509,15 +577,21 @@ class TCMDiagnosisAgent:
     
     def _update_phase(self) -> None:
         """更新问诊阶段"""
-        if self.state.current_phase == ConsultationPhase.WELCOME:
+        current_phase = self._get_phase_value(self.state.current_phase)
+        welcome_phase = self._get_phase_value(ConsultationPhase.WELCOME)
+        symptom_phase = self._get_phase_value(ConsultationPhase.SYMPTOM_INQUIRY)
+        tongue_phase = self._get_phase_value(ConsultationPhase.TONGUE_PULSE)
+        differential_phase = self._get_phase_value(ConsultationPhase.DIFFERENTIAL)
+        
+        if current_phase == welcome_phase:
             if len(self.state.symptoms) > 0:
                 self.state.current_phase = ConsultationPhase.SYMPTOM_INQUIRY
         
-        elif self.state.current_phase == ConsultationPhase.SYMPTOM_INQUIRY:
+        elif current_phase == symptom_phase:
             if len(self.state.symptoms) >= 3:
                 self.state.current_phase = ConsultationPhase.TONGUE_PULSE
         
-        elif self.state.current_phase == ConsultationPhase.TONGUE_PULSE:
+        elif current_phase == tongue_phase:
             self.state.current_phase = ConsultationPhase.DIFFERENTIAL
         
         self.state.updated_at = datetime.now()

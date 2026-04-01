@@ -558,6 +558,7 @@ class Runner:
             **kwargs,
         ):
             run_response = response
+            logger.info(f"run_response 是个啥 {run_response}")
 
         if agent.response_model is not None:
             if agent.structured_outputs:

@@ -17,64 +17,91 @@ from agentica.document import Document
 from agentica.model.message import Message, MessageReferences
 from agentica.run_response import RunResponseExtraData
 from agentica.utils.timer import Timer
+from typing import get_args, get_origin, List
+from pydantic import BaseModel
 
 
 class PromptsMixin:
     """Mixin class containing prompt building methods for Agent."""
 
+
+
     def get_json_output_prompt(self) -> str:
         """Return the JSON output prompt for the Agent."""
-        from pydantic import BaseModel
+
+        def is_pydantic_model_type(tp):
+            """检查类型或泛型内是否是 BaseModel"""
+            origin = get_origin(tp)
+            if origin is None:
+                # 不是泛型，直接判断
+                return isinstance(tp, type) and issubclass(tp, BaseModel)
+            elif origin in (list, List):
+                args = get_args(tp)
+                if args:
+                    return isinstance(args[0], type) and issubclass(args[0], BaseModel)
+            return False
 
         json_output_prompt = ""
+        logger.info(f"self.response_model {self.response_model}, {type(self.response_model)}")
+
         if self.response_model is not None:
+            # 字符串类型
             if isinstance(self.response_model, str):
                 json_output_prompt += "Respond with a JSON object containing the following fields:\n"
                 json_output_prompt += f"{self.response_model}\n"
+
+            # 直接 list 实例
             elif isinstance(self.response_model, list):
                 json_output_prompt += "Respond with a JSON object containing the following fields:\n"
                 json_output_prompt += f"{json.dumps(self.response_model, ensure_ascii=False)}\n"
-            elif issubclass(self.response_model, BaseModel):
-                json_schema = self.response_model.model_json_schema()
-                if json_schema is not None:
-                    response_model_properties = {}
-                    json_schema_properties = json_schema.get("properties")
-                    if json_schema_properties is not None:
-                        for field_name, field_properties in json_schema_properties.items():
-                            formatted_field_properties = {
-                                prop_name: prop_value
-                                for prop_name, prop_value in field_properties.items()
-                                if prop_name != "title"
-                            }
-                            response_model_properties[field_name] = formatted_field_properties
-                    json_schema_defs = json_schema.get("$defs")
-                    if json_schema_defs is not None:
-                        response_model_properties["$defs"] = {}
-                        for def_name, def_properties in json_schema_defs.items():
-                            def_fields = def_properties.get("properties")
-                            formatted_def_properties = {}
-                            if def_fields is not None:
-                                for field_name, field_properties in def_fields.items():
-                                    formatted_field_properties = {
-                                        prop_name: prop_value
-                                        for prop_name, prop_value in field_properties.items()
-                                        if prop_name != "title"
-                                    }
-                                    formatted_def_properties[field_name] = formatted_field_properties
-                            if len(formatted_def_properties) > 0:
-                                response_model_properties["$defs"][def_name] = formatted_def_properties
 
-                    if len(response_model_properties) > 0:
-                        field_names = [key for key in response_model_properties.keys() if key != '$defs']
-                        json_output_prompt += "Respond with a JSON object containing these exact fields:\n"
-                        json_output_prompt += f"{json.dumps(field_names, ensure_ascii=False)}\n\n"
-                        json_output_prompt += "Field schemas:\n"
-                        json_output_prompt += f"{json.dumps(response_model_properties, indent=2, ensure_ascii=False)}\n"
+            # BaseModel 或 List[BaseModel]
+            elif is_pydantic_model_type(self.response_model):
+                origin = get_origin(self.response_model)
+                if origin in (list, List):
+                    model_cls = get_args(self.response_model)[0]
+                    is_list = True
+                else:
+                    model_cls = self.response_model
+                    is_list = False
+                logger.info(f"model_cls: {model_cls}, {type(model_cls)}")
+                json_schema = model_cls.model_json_schema()
+                if json_schema:
+                    response_model_properties = {}
+                    # 主 schema
+                    json_schema_properties = json_schema.get("properties", {})
+                    for field_name, field_props in json_schema_properties.items():
+                        response_model_properties[field_name] = {
+                            k: v for k, v in field_props.items() if k != "title"
+                        }
+
+                    # 处理 $defs
+                    json_schema_defs = json_schema.get("$defs")
+                    if json_schema_defs:
+                        response_model_properties["$defs"] = {}
+                        for def_name, def_props in json_schema_defs.items():
+                            def_fields = def_props.get("properties", {})
+                            formatted_def = {
+                                f_name: {k: v for k, v in f_props.items() if k != "title"}
+                                for f_name, f_props in def_fields.items()
+                            }
+                            if formatted_def:
+                                response_model_properties["$defs"][def_name] = formatted_def
+
+                    # 构建 prompt
+                    field_names = [k for k in response_model_properties.keys() if k != "$defs"]
+                    json_output_prompt += "Respond with a JSON object containing these exact fields:\n"
+                    json_output_prompt += f"{json.dumps(field_names, ensure_ascii=False)}\n\n"
+                    json_output_prompt += "Field schemas:\n"
+                    json_output_prompt += f"{json.dumps(response_model_properties, indent=2, ensure_ascii=False)}\n"
+
             else:
                 logger.warning(f"Could not build json schema for {self.response_model}")
+
         else:
             json_output_prompt += "Respond with a JSON object.\n"
 
+        # 通用 JSON 格式约束
         json_output_prompt += (
             "\nIMPORTANT JSON formatting rules:\n"
             "- Output ONLY the JSON object, nothing else.\n"

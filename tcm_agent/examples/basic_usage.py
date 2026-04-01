@@ -2,12 +2,22 @@
 """
 TCM Agent - Usage Examples
 中医问诊 Agent 使用示例
+
+默认模型为通义千问 (Qwen)，需要环境变量 DASHSCOPE_API_KEY。
+也可在 ~/.agentica/.env 或项目根目录 .env 中配置（见 .env.example）。
 """
 import asyncio
 import sys
 import os
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 仓库根目录加入 path，且优先加载根目录 .env（cwd 在 examples/ 时也能读到密钥）
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT))
+
+from dotenv import load_dotenv
+
+load_dotenv(_REPO_ROOT / ".env")
 
 from tcm_agent import (
     TCMConsultationSystem,
@@ -15,6 +25,8 @@ from tcm_agent import (
     TCMKnowledgeBase,
     IntentionRecognitionAgent,
 )
+from tcm_agent.models import get_enum_value
+from agentica import QwenChat
 
 
 async def example_basic_chat():
@@ -67,8 +79,7 @@ async def example_intention_recognition():
     for user_input in test_inputs:
         result = await agent.recognize(user_input)
         print(f"输入: {user_input}")
-        print(f"意图: {result.intention.value} (置信度: {result.confidence:.2f})")
-        print()
+        print(f"意图: {get_enum_value(result.intention)} (置信度: {result.confidence:.2f})")
 
 
 async def example_knowledge_query():
@@ -117,7 +128,7 @@ async def example_direct_agent():
     print("示例4: 直接使用问诊 Agent")
     print("=" * 60)
     
-    agent = TCMDiagnosisAgent()
+    agent = TCMDiagnosisAgent(model=QwenChat(id="qwen-plus"))
     
     messages = [
         "医生你好",
@@ -135,10 +146,10 @@ async def example_direct_agent():
     
     state = agent.get_state()
     print(f"\n问诊状态:")
-    print(f"- 阶段: {state.current_phase.value}")
+    print(f"- 阶段: {get_enum_value(state.current_phase)}")
     print(f"- 已收集症状: {[s.name for s in state.symptoms]}")
     if state.diagnosis:
-        print(f"- 辨证: {state.diagnosis.syndrome.value}")
+        print(f"- 辨证: {get_enum_value(state.diagnosis.syndrome)}")
 
 
 async def example_diagnose_by_symptoms():
@@ -182,11 +193,11 @@ async def main():
     print("中医问诊 Agent 使用示例")
     print("=" * 60)
     
-    await example_basic_chat()
-    await example_intention_recognition()
-    await example_knowledge_query()
+    # await example_basic_chat()
+    # await example_intention_recognition()
+    # await example_knowledge_query()
     await example_direct_agent()
-    await example_diagnose_by_symptoms()
+    # await example_diagnose_by_symptoms()
     
     print("\n" + "=" * 60)
     print("所有示例运行完成！")

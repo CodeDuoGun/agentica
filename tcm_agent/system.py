@@ -24,6 +24,7 @@ from tcm_agent.models import (
     IntentionType,
     IntentionResult,
 )
+from log import logger
 
 
 class SessionStatus(Enum):
@@ -133,7 +134,7 @@ class TCMConsultationSystem:
         if self.current_session.status != SessionStatus.ACTIVE:
             self.current_session.status = SessionStatus.ACTIVE
             self.current_session.updated_at = datetime.now()
-        
+        logger.info(f"Current session: {self.current_session}")
         turn_count = len(self.current_session.messages)
         if turn_count >= self.max_turns:
             self.current_session.status = SessionStatus.COMPLETED
@@ -350,7 +351,6 @@ async def create_cli_session():
     await system.start_session()
     
     print("助手: " + system.diagnosis_agent.WELCOME_MESSAGE)
-    print()
     
     while True:
         try:
