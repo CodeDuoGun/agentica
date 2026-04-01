@@ -214,3 +214,19 @@ class KGQueryResult(BaseModel):
     context: str = Field(..., description="检索到的上下文")
     source: str = Field("knowledge_graph", description="来源")
     relevance_score: float = Field(0.0, description="相关度评分")
+
+
+def get_enum_value(enum_or_str: Any) -> str:
+    """安全获取枚举值，处理字符串或枚举对象
+    
+    Args:
+        enum_or_str: 枚举对象或字符串
+        
+    Returns:
+        str: 枚举的字符串值
+    """
+    if isinstance(enum_or_str, str):
+        return enum_or_str
+    if hasattr(enum_or_str, 'value'):
+        return enum_or_str.value
+    return str(enum_or_str)

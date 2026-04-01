@@ -2,6 +2,10 @@
 
 TODO
 - [ ] print_response  修改为yield sse
+- [ ] 接入知识图谱RAG检索, 处理医疗咨询问题、中医相关问题
+- [ ] Diagnosis agent, 目前回复内容过于冗余繁琐, 修改_build_system_prompt
+- [ ] 修改状态问题槽位信息
+- [ ] sessionid 
 
 
 tcm_agent/

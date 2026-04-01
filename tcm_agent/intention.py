@@ -12,7 +12,7 @@ Intention Recognition Agent
 from typing import Dict, Any, Optional, List
 from pydantic import BaseModel, Field
 
-from agentica import Agent, OpenAIChat
+from agentica import Agent, QwenChat 
 from agentica.model.message import UserMessage
 
 from tcm_agent.models import IntentionType, IntentionResult, PatientInfo, SymptomInfo
@@ -72,7 +72,7 @@ class IntentionRecognitionAgent:
             model: LLM 模型，默认使用 OpenAI gpt-4o-mini
             temperature: 生成温度
         """
-        self.model = model or OpenAIChat(id="gpt-4o-mini", temperature=temperature)
+        self.model = model or QwenChat(id="qwen-plus", temperature=temperature)
         self.agent = Agent(
             model=self.model,
             name="IntentRecognitionAgent",
@@ -175,7 +175,7 @@ class SymptomExtractor:
         model: Optional[Any] = None,
         temperature: float = 0.1
     ):
-        self.model = model or OpenAIChat(id="gpt-4o-mini", temperature=temperature)
+        self.model = model or QwenChat(id="qwen-plus", temperature=temperature)
         self.agent = Agent(
             model=self.model,
             name="SymptomExtractor",
@@ -250,7 +250,7 @@ class PatientInfoExtractor:
         model: Optional[Any] = None,
         temperature: float = 0.1
     ):
-        self.model = model or OpenAIChat(id="gpt-4o-mini", temperature=temperature)
+        self.model = model or QwenChat(id="qwen-plus", temperature=temperature)
         self.agent = Agent(
             model=self.model,
             name="PatientInfoExtractor",
