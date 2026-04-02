@@ -144,8 +144,13 @@ class IntentionRecognitionAgent:
                 prompt_parts.append(f"上一次意图：{context['previous_intention']}")
             if context.get("turn_count"):
                 prompt_parts.append(f"当前对话轮数：{context['turn_count']}")
+            if context.get("recent_messages"):
+                recent_messages = ""
+                for msg in context.get("recent_messages"):
+                    recent_messages += f"角色:{msg['role']},内容:{msg["content"]}\n"
+                prompt_parts.append(f"对话历史:{recent_messages}")
         
-        prompt_parts.append("\n请分析以上输入，识别用户意图并返回结构化的分析结果。")
+        prompt_parts.append("\n请分析以上输入，结合上下文识别用户意图并返回结构化的分析结果。")
         
         return "\n".join(prompt_parts)
     

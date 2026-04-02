@@ -11,6 +11,7 @@ TODO
 - [ ] 打招呼语创建session后返回，无问题
 - [ ] 意图识别没代入上下文
 - [ ] 需要接入问诊agent， _handle_medical_consultation 修改入口
+- [ ] 会话历史入库， redis
 
 
 
