@@ -19,7 +19,6 @@ from agentica.model.message import UserMessage, AssistantMessage
 from tcm_agent.models import (
     ConsultationState,
     ConsultationPhase,
-    IntentionType,
     SymptomInfo,
     SymptomLocation,
     PatientInfo,
@@ -29,7 +28,7 @@ from tcm_agent.models import (
     SyndromeType,
 )
 from tcm_agent.knowledge import TCMKnowledgeBase
-from tcm_agent.intention import IntentionRecognitionAgent, SymptomExtractor, PatientInfoExtractor
+from tcm_agent.intention import IntentionRecognitionAgent, PatientInfoExtractor
 from log import logger
 
 
@@ -55,16 +54,6 @@ class TCMDiagnosisAgent:
 
 请问您今天是来看什么问题的？有什么不舒服的地方吗？"""
     
-    PHASE_MESSAGES = {
-        ConsultationPhase.WELCOME: "您好！请问有什么可以帮您的？",
-        ConsultationPhase.BASIC_INFO: "好的，让我先了解一下您的基本信息。请问您的年龄和性别是？",
-        ConsultationPhase.SYMPTOM_INQUIRY: "请您详细描述一下您的症状，包括症状出现的时间、部位、严重程度等。",
-        ConsultationPhase.TONGUE_PULSE: "请问您的舌苔和面色有什么特点吗？如果方便的话，可以描述一下。",
-        ConsultationPhase.DIFFERENTIAL: "好的，让我根据您描述的情况进行分析。",
-        ConsultationPhase.TREATMENT_PLAN: "根据分析结果，我来为您制定一个调理方案。",
-        ConsultationPhase.FOLLOW_UP: "请问您还有其他问题吗？",
-        ConsultationPhase.CONCLUSION: "好的，感谢您的咨询。祝您身体健康！如有需要随时再来问诊。",
-    }
     
     def __init__(
         self,
@@ -93,7 +82,7 @@ class TCMDiagnosisAgent:
         conversation_model = QwenChat(id="qwen-plus")
         
         self.intention_agent = IntentionRecognitionAgent(model=intention_model, temperature=0.1)
-        self.symptom_extractor = SymptomExtractor(model=symptom_model, temperature=0.1)
+        # self.symptom_extractor = SymptomExtractor(model=symptom_model, temperature=0.1)
         self.patient_info_extractor = PatientInfoExtractor(model=patient_model, temperature=0.1)
         
         self.state = ConsultationState()
@@ -230,7 +219,7 @@ class TCMDiagnosisAgent:
         elif intention_value == "treatment":
             return await self._generate_treatment_response()
         
-        elif len(self.state.symptoms) < 3 and self._get_phase_value(self.state.current_phase) in [
+        elif len(self.state.symptoms) < 3 and self._get_phase_value(self.state.consultation_phase) in [
             "welcome",
             "symptom_inquiry"
         ]:
@@ -327,7 +316,7 @@ class TCMDiagnosisAgent:
         if len(self.state.symptoms) < 2:
             return "为了给您更准确的建议，我需要先了解更多症状信息。请您描述一下您的具体症状。"
         
-        self.state.current_phase = ConsultationPhase.DIFFERENTIAL
+        self.state.consultation_phase = ConsultationPhase.DIFFERENTIAL
         
         symptom_names = [s.name for s in self.state.symptoms]
         kg_results = self.knowledge_base.query_by_symptoms(symptom_names, max_results=3)
@@ -345,11 +334,6 @@ class TCMDiagnosisAgent:
 
 **治疗原则**：{diagnosis.recommendation}
 """
-        
-        if diagnosis.primary_symptoms:
-            response += f"\n**主症**：{', '.join(diagnosis.primary_symptoms)}"
-        if diagnosis.secondary_symptoms:
-            response += f"\n**次症**：{', '.join(diagnosis.secondary_symptoms)}"
         
         return response
     
@@ -379,7 +363,7 @@ class TCMDiagnosisAgent:
             follow_up_advice="建议1-2周后复诊观察效果"
         )
         
-        self.state.current_phase = ConsultationPhase.TREATMENT_PLAN
+        self.state.consultation_phase = ConsultationPhase.TREATMENT_PLAN
         
         response = "根据您的体质和症状，我为您提供以下调理方案：\n\n"
         
@@ -457,8 +441,6 @@ class TCMDiagnosisAgent:
                 syndrome=syndrome_type,
                 syndrome_description=f"{syndrome_name}（{category}）：{syndrome_description}",
                 pathogenesis=pathogenesis,
-                primary_symptoms=[s.name for s in self.state.symptoms[:3]],
-                secondary_symptoms=[s.name for s in self.state.symptoms[3:]],
                 differential_diagnosis=[],
                 recommendation=f"治法：{self._get_treatment_principle(syndrome_name)}"
             )
@@ -467,8 +449,6 @@ class TCMDiagnosisAgent:
             syndrome=SyndromeType.OTHER,
             syndrome_description="综合分析",
             pathogenesis="根据您描述的症状，难以确定具体证型，建议进一步详细描述或咨询专业中医师。",
-            primary_symptoms=[s.name for s in self.state.symptoms],
-            secondary_symptoms=[],
             differential_diagnosis=[],
             recommendation="建议：详细描述症状，或咨询专业中医师进行面诊。"
         )
@@ -524,7 +504,7 @@ class TCMDiagnosisAgent:
     
     def _build_agent_prompt(self) -> str:
         """构建 Agent 提示词"""
-        phase_info = self._get_phase_value(self.state.current_phase)
+        phase_info = self._get_phase_value(self.state.consultation_phase)
         
         patient_info_parts = []
         if self.state.patient_info.age:
@@ -544,7 +524,7 @@ class TCMDiagnosisAgent:
         """获取上下文信息"""
         intention_value = self._get_intention_value(self.state.intention)
         return {
-            "conversation_phase": self._get_phase_value(self.state.current_phase),
+            "conversation_phase": self._get_phase_value(self.state.consultation_phase),
             "collected_symptoms": [s.name for s in self.state.symptoms],
             "previous_intention": intention_value if intention_value != "other" else None,
             "patient_age": self.state.patient_info.age,
@@ -577,7 +557,7 @@ class TCMDiagnosisAgent:
     
     def _update_phase(self) -> None:
         """更新问诊阶段"""
-        current_phase = self._get_phase_value(self.state.current_phase)
+        current_phase = self._get_phase_value(self.state.consultation_phase)
         welcome_phase = self._get_phase_value(ConsultationPhase.WELCOME)
         symptom_phase = self._get_phase_value(ConsultationPhase.SYMPTOM_INQUIRY)
         tongue_phase = self._get_phase_value(ConsultationPhase.TONGUE_PULSE)
@@ -585,14 +565,14 @@ class TCMDiagnosisAgent:
         
         if current_phase == welcome_phase:
             if len(self.state.symptoms) > 0:
-                self.state.current_phase = ConsultationPhase.SYMPTOM_INQUIRY
+                self.state.consultation_phase = ConsultationPhase.SYMPTOM_INQUIRY
         
         elif current_phase == symptom_phase:
             if len(self.state.symptoms) >= 3:
-                self.state.current_phase = ConsultationPhase.TONGUE_PULSE
+                self.state.consultation_phase = ConsultationPhase.TONGUE_PULSE
         
         elif current_phase == tongue_phase:
-            self.state.current_phase = ConsultationPhase.DIFFERENTIAL
+            self.state.consultation_phase = ConsultationPhase.DIFFERENTIAL
         
         self.state.updated_at = datetime.now()
     

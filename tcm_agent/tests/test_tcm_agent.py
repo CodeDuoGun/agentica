@@ -48,7 +48,7 @@ class TestTCMModels:
         from tcm_agent.models import ConsultationState, ConsultationPhase
         state = ConsultationState()
         assert state.session_id
-        assert state.current_phase == ConsultationPhase.WELCOME
+        assert state.consultation_phase == ConsultationPhase.WELCOME
         assert len(state.symptoms) == 0
         assert not state.is_complete
 
@@ -226,7 +226,7 @@ class TestTCMDiagnosisAgent:
         await agent.run("我最近失眠")
         
         assert len(agent.state.symptoms) > 0
-        assert agent.state.current_phase.value in ["welcome", "symptom"]
+        assert agent.state.consultation_phase in ["welcome", "symptom"]
     
     @pytest.mark.asyncio
     async def test_reset(self):
@@ -240,7 +240,7 @@ class TestTCMDiagnosisAgent:
         
         agent.reset()
         assert len(agent.state.symptoms) == 0
-        assert agent.state.current_phase.value == "welcome"
+        assert agent.state.consultation_phase == "welcome"
 
 
 class TestTCMConsultationSystem:

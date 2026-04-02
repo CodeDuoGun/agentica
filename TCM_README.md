@@ -2,10 +2,16 @@
 
 TODO
 - [ ] print_response  修改为yield sse
-- [ ] 接入知识图谱RAG检索, 处理医疗咨询问题、中医相关问题
+- [x] 接入知识图谱RAG检索, 处理医疗咨询问题、中医相关问题
 - [ ] Diagnosis agent, 目前回复内容过于冗余繁琐, 修改_build_system_prompt
 - [ ] 修改状态问题槽位信息
-- [ ] sessionid 
+- [x] sessionid 
+- [ ] ConsultationRecord 结构化病历agent ，提示词
+- [x] VisitTypeRecognitionAgent 去掉
+- [ ] 打招呼语创建session后返回，无问题
+- [ ] 意图识别没代入上下文
+- [ ] 需要接入问诊agent， _handle_medical_consultation 修改入口
+
 
 
 tcm_agent/
@@ -35,3 +41,5 @@ tcm_agent/
 │   ├── test_agent_chat.py
 │   └── test_custom_prompt.py
 └── README.md             # 文档
+
+python -m tcm_agent.web.run
