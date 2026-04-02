@@ -1,0 +1,8 @@
+# TCM Agent Web Dependencies
+# 中医问诊系统 Web 依赖
+
+# Web 框架
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# 前端依赖 (可选)

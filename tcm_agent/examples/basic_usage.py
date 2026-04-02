@@ -50,7 +50,6 @@ async def example_intention_recognition():
         print(f"\n输入: {user_input}")
         print(f"意图类别: {get_enum_value(result.category)}")
         print(f"置信度: {result.confidence:.2f}")
-        print(f"推荐回复: {result.suggested_response or 'N/A'}")
 
 
 async def example_consultation_system():
@@ -119,7 +118,7 @@ async def example_consultation_flow():
         ("这种情况大概有三个月了", "consultation"),
         ("没有过敏史", "consultation"),
         # 非医疗咨询（不回复）
-        ("今天股票涨了吗？", "non_medical"),
+        ("今天股票涨了吗？", "other"),
     ]
     
     for msg, expected_category in test_cases:

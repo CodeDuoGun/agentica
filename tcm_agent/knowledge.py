@@ -1,22 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-TCM Knowledge Base with Graph RAG
-中医知识图谱 + RAG 检索系统
+TCM Knowledge Base with Neo4j Graph RAG
+中医知识库 - 基于 Neo4j 图数据库的 RAG 检索系统
 
 Features:
-- 知识图谱存储（实体-关系）
-- 向量语义检索
+- Neo4j 图数据库存储（实体-关系）
+- 向量语义检索（通过 Neo4j 的向量索引）
 - 图遍历查询
 - 路径推理
 """
 import json
 import re
+import os
 from typing import List, Dict, Any, Optional, Tuple, Set
-from dataclasses import dataclass, field
-from collections import defaultdict
 from pydantic import BaseModel
 
-import networkx as nx
+from loguru import logger
+
+# 导入 Neo4j 存储后端
+try:
+    from graphrag.graphrag_lite.neo4j_store import Neo4jStore
+except ImportError:
+    Neo4jStore = None
 
 
 class TCMEntity(BaseModel):
@@ -30,6 +35,18 @@ class TCMEntity(BaseModel):
     
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
+    
+    @classmethod
+    def from_neo4j_dict(cls, data: Dict[str, Any]) -> "TCMEntity":
+        """从 Neo4j 返回的字典创建实体"""
+        properties = data.get("properties", {})
+        return cls(
+            id=data.get("name", ""),
+            name=data.get("name", ""),
+            type=data.get("type", ""),
+            description=data.get("description", ""),
+            properties={}  # Neo4j 中 properties 存储在 description 中
+        )
 
 
 class TCMRelation(BaseModel):
@@ -44,183 +61,227 @@ class TCMRelation(BaseModel):
         return self.model_dump()
 
 
-class TCMKnowledgeGraph:
-    """中医知识图谱"""
-    
-    def __init__(self):
-        self.graph = nx.MultiDiGraph()
-        self.entity_index: Dict[str, TCMEntity] = {}
-        self.type_index: Dict[str, Set[str]] = defaultdict(set)
-        self.alias_index: Dict[str, str] = {}  # alias -> entity_id
-    
-    def add_entity(self, entity: TCMEntity) -> None:
-        """添加实体"""
-        self.graph.add_node(entity.id, **entity.to_dict())
-        self.entity_index[entity.id] = entity
-        self.type_index[entity.type].add(entity.id)
-        
-        for alias in entity.aliases:
-            self.alias_index[alias.lower()] = entity.id
-    
-    def add_relation(self, relation: TCMRelation) -> None:
-        """添加关系"""
-        self.graph.add_edge(
-            relation.source,
-            relation.target,
-            relation_type=relation.relation_type,
-            weight=relation.weight,
-            description=relation.description
-        )
-    
-    def get_entity(self, entity_id: str) -> Optional[TCMEntity]:
-        """获取实体"""
-        return self.entity_index.get(entity_id)
-    
-    def find_entity_by_name(self, name: str) -> Optional[TCMEntity]:
-        """通过名称查找实体"""
-        entity_id = self.alias_index.get(name.lower())
-        if entity_id:
-            return self.entity_index.get(entity_id)
-        
-        for entity in self.entity_index.values():
-            if entity.name == name or name in entity.aliases:
-                return entity
-        return None
-    
-    def get_related_entities(
-        self, 
-        entity_id: str, 
-        relation_types: Optional[List[str]] = None,
-        depth: int = 1
-    ) -> List[Tuple[TCMEntity, str, float]]:
-        """获取相关实体 (实体, 关系类型, 权重)"""
-        results = []
-        
-        if depth == 1:
-            edges = self.graph.out_edges(entity_id, data=True)
-            for source, target, data in edges:
-                if relation_types is None or data.get('relation_type') in relation_types:
-                    entity = self.entity_index.get(target)
-                    if entity:
-                        results.append((
-                            entity,
-                            data.get('relation_type', ''),
-                            data.get('weight', 1.0)
-                        ))
-        else:
-            paths = list(nx.single_source_shortest_path_length(
-                self.graph, entity_id, cutoff=depth
-            ).keys())
-            paths.remove(entity_id)
-            
-            for path_id in paths:
-                try:
-                    shortest_path = nx.shortest_path(self.graph, entity_id, path_id)
-                    if len(shortest_path) <= depth + 1:
-                        entity = self.entity_index.get(path_id)
-                        if entity:
-                            weight = 1.0 / (len(shortest_path) - 1)
-                            results.append((entity, 'path', weight))
-                except nx.NetworkXNoPath:
-                    continue
-        
-        return results
-    
-    def get_entities_by_type(self, entity_type: str) -> List[TCMEntity]:
-        """获取指定类型的所有实体"""
-        entity_ids = self.type_index.get(entity_type, set())
-        return [self.entity_index[eid] for eid in entity_ids if eid in self.entity_index]
-    
-    def find_paths(
-        self,
-        source_name: str,
-        target_name: str,
-        max_length: int = 3
-    ) -> List[List[str]]:
-        """查找两个实体之间的路径"""
-        source_entity = self.find_entity_by_name(source_name)
-        target_entity = self.find_entity_by_name(target_name)
-        
-        if not source_entity or not target_entity:
-            return []
-        
-        try:
-            paths = list(nx.all_simple_paths(
-                self.graph,
-                source_entity.id,
-                target_entity.id,
-                cutoff=max_length
-            ))
-            return paths
-        except nx.NetworkXNoPath:
-            return []
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """导出为字典"""
-        return {
-            "entities": [e.to_dict() for e in self.entity_index.values()],
-            "relations": [
-                {"source": u, "target": v, **d}
-                for u, v, d in self.graph.edges(data=True)
-            ]
-        }
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "TCMKnowledgeGraph":
-        """从字典加载"""
-        kg = cls()
-        for entity_data in data.get("entities", []):
-            entity = TCMEntity(**entity_data)
-            kg.add_entity(entity)
-        for rel_data in data.get("relations", []):
-            relation = TCMRelation(**rel_data)
-            kg.add_relation(relation)
-        return kg
-
-
 class TCMKnowledgeBase:
     """
-    中医知识库 - 结合知识图谱和向量检索
+    中医知识库 - 基于 Neo4j 图数据库
     
     Features:
-    - 知识图谱存储和查询
+    - Neo4j 图数据库存储和查询
     - 向量语义检索
     - 混合检索策略
     - 内置中医知识数据
     """
     
+    # Neo4j 配置
+    NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+    NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+    NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
+    NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+    
     def __init__(
         self,
         embedding_model: Any = None,
         vector_db: Any = None,
-        kg: Optional[TCMKnowledgeGraph] = None
+        uri: Optional[str] = None,
+        user: Optional[str] = None,
+        password: Optional[str] = None,
+        database: Optional[str] = None
     ):
+        """
+        初始化知识库
+        
+        Args:
+            embedding_model: 嵌入模型（用于向量检索）
+            vector_db: 向量数据库
+            uri: Neo4j URI
+            user: Neo4j 用户名
+            password: Neo4j 密码
+            database: Neo4j 数据库名
+        """
         self.embedding_model = embedding_model
         self.vector_db = vector_db
-        self.kg = kg or TCMKnowledgeGraph()
-        self.documents: List[Dict[str, Any]] = []
+        self._neo4j_store: Optional[Neo4jStore] = None
+        
+        # Neo4j 连接配置
+        self._neo4j_uri = uri or self.NEO4J_URI
+        self._neo4j_user = user or self.NEO4J_USER
+        self._neo4j_password = password or self.NEO4J_PASSWORD
+        self._neo4j_database = database or self.NEO4J_DATABASE
+        
         self._initialized = False
+        self._connection_failed = False
+    
+    def _get_neo4j_store(self) -> Optional[Neo4jStore]:
+        """获取 Neo4j 存储实例（延迟初始化）"""
+        if self._connection_failed:
+            return None
+        
+        if self._neo4j_store is None:
+            try:
+                if Neo4jStore is None:
+                    logger.warning("Neo4jStore 未安装，请使用 mock 模式")
+                    return None
+                
+                self._neo4j_store = Neo4jStore(
+                    uri=self._neo4j_uri,
+                    user=self._neo4j_user,
+                    password=self._neo4j_password,
+                    database=self._neo4j_database
+                )
+                # 测试连接
+                stats = self._neo4j_store.get_stats()
+                logger.info(f"[Neo4j] 连接成功，统计: {stats}")
+            except Exception as e:
+                logger.warning(f"[Neo4j] 连接失败: {e}，将使用 mock 模式")
+                self._connection_failed = True
+                self._neo4j_store = None
+                return None
+        
+        return self._neo4j_store
+    
+    def close(self):
+        """关闭 Neo4j 连接"""
+        if self._neo4j_store:
+            self._neo4j_store.close()
+            self._neo4j_store = None
     
     def initialize(self) -> None:
         """初始化知识库"""
         if self._initialized:
             return
         
-        self._load_default_knowledge()
+        # 尝试连接 Neo4j
+        neo4j_store = self._get_neo4j_store()
+        
+        if neo4j_store is not None:
+            # 检查是否已有数据
+            stats = neo4j_store.get_stats()
+            if stats["entities"] == 0:
+                logger.info("[Neo4j] 数据库为空，开始加载默认知识...")
+                self._load_default_knowledge_to_neo4j()
+            else:
+                logger.info(f"[Neo4j] 数据库已有 {stats['entities']} 个实体")
+        else:
+            # 使用 mock 模式
+            logger.info("[Mock] 使用内存模式存储知识")
+            self._mock_mode = True
+            self._mock_entities: Dict[str, Dict] = {}
+            self._mock_relations: List[Dict] = []
+            self._load_default_knowledge_mock()
+        
         self._initialized = True
     
-    def _load_default_knowledge(self) -> None:
-        """加载默认中医知识"""
-        default_kg = self._build_default_tcm_graph()
-        for entity in default_kg:
-            self.kg.add_entity(TCMEntity(**entity))
+    # ==================== Neo4j 存储操作 ====================
+    
+    def _upsert_entity_neo4j(self, entity: TCMEntity) -> None:
+        """向 Neo4j 插入或更新实体"""
+        store = self._get_neo4j_store()
+        if store is None:
+            return
+        
+        description = entity.description
+        if entity.properties:
+            description = json.dumps({
+                "description": entity.description,
+                "properties": entity.properties,
+                "aliases": entity.aliases
+            }, ensure_ascii=False)
+        
+        store.upsert_entity(
+            name=entity.name,
+            entity_type=entity.type,
+            description=description,
+            embedding=None
+        )
+    
+    def _upsert_relation_neo4j(self, relation: TCMRelation) -> None:
+        """向 Neo4j 插入或更新关系"""
+        store = self._get_neo4j_store()
+        if store is None:
+            return
+        
+        store.upsert_relation(
+            src=relation.source,
+            tgt=relation.target,
+            keywords=relation.relation_type,
+            description=relation.description,
+            embedding=None
+        )
+    
+    def _get_entity_neo4j(self, name: str) -> Optional[Dict]:
+        """从 Neo4j 获取实体"""
+        store = self._get_neo4j_store()
+        if store is None:
+            return None
+        
+        return store.get_entity(name)
+    
+    def _get_relations_by_entity_neo4j(self, name: str) -> List[Dict]:
+        """从 Neo4j 获取实体的关联关系"""
+        store = self._get_neo4j_store()
+        if store is None:
+            return []
+        
+        return store.get_relations_by_entity(name)
+    
+    def _list_entities_neo4j(self, entity_type: Optional[str] = None) -> List[Dict]:
+        """从 Neo4j 列出实体"""
+        store = self._get_neo4j_store()
+        if store is None:
+            return []
+        
+        entities = store.list_entities()
+        if entity_type:
+            entities = [e for e in entities if e.get("type") == entity_type]
+        return entities
+    
+    # ==================== Mock 模式存储操作 ====================
+    
+    def _load_default_knowledge_mock(self) -> None:
+        """加载默认知识到 mock 模式"""
+        for entity_data in self._build_default_tcm_graph():
+            self._mock_entities[entity_data["name"]] = entity_data
         
         for relation in self._get_default_relations():
-            self.kg.add_relation(TCMRelation(**relation))
+            self._mock_relations.append(relation)
+    
+    def _find_mock_entity(self, name: str) -> Optional[Dict]:
+        """在 mock 模式中查找实体"""
+        # 直接匹配
+        if name in self._mock_entities:
+            return self._mock_entities[name]
+        
+        # 别名匹配
+        for entity in self._mock_entities.values():
+            if name in entity.get("aliases", []):
+                return entity
+        
+        # 部分匹配
+        for entity in self._mock_entities.values():
+            if name in entity.get("name", ""):
+                return entity
+        
+        return None
+    
+    # ==================== 知识加载 ====================
+    
+    def _load_default_knowledge_to_neo4j(self) -> None:
+        """加载默认中医知识到 Neo4j"""
+        # 加载实体
+        for entity_data in self._build_default_tcm_graph():
+            entity = TCMEntity(**entity_data)
+            self._upsert_entity_neo4j(entity)
+        
+        # 加载关系
+        for relation_data in self._get_default_relations():
+            relation = TCMRelation(**relation_data)
+            self._upsert_relation_neo4j(relation)
+        
+        logger.info("[Neo4j] 默认知识加载完成")
     
     def _build_default_tcm_graph(self) -> List[Dict[str, Any]]:
         """构建默认中医知识图谱"""
-        entities = [
+        return [
             {
                 "id": "yin_deficiency",
                 "name": "阴虚",
@@ -330,30 +391,6 @@ class TCMKnowledgeBase:
                 }
             },
             {
-                "id": "spleen_qi_sinking",
-                "name": "脾气下陷",
-                "type": "syndrome",
-                "aliases": ["中气下陷", "脾虚下陷", "气虚下陷"],
-                "description": "脾气虚弱，升举无力，以脘腹坠胀、久泻脱肛、脉弱等为常见症的证候",
-                "properties": {
-                    "category": "虚证",
-                    "related_organs": ["脾"],
-                    "common_symptoms": ["脘腹坠胀", "久泻脱肛", "头晕", "脉弱"]
-                }
-            },
-            {
-                "id": "lung_qi_deficiency",
-                "name": "肺气虚",
-                "type": "syndrome",
-                "aliases": ["肺气不足", "肺虚"],
-                "description": "肺气虚弱，以咳喘无力、少气懒言、声音低怯、自汗易感等为常见症的证候",
-                "properties": {
-                    "category": "虚证",
-                    "related_organs": ["肺"],
-                    "common_symptoms": ["咳喘无力", "少气懒言", "声音低怯", "自汗", "易感"]
-                }
-            },
-            {
                 "id": "kidney_yin_deficiency",
                 "name": "肾阴虚",
                 "type": "syndrome",
@@ -448,20 +485,6 @@ class TCMKnowledgeBase:
                 }
             },
             {
-                "id": "lycium",
-                "name": "枸杞子",
-                "type": "herb",
-                "aliases": ["枸杞", "甘枸杞"],
-                "description": "滋补肝肾，益精明目",
-                "properties": {
-                    "taste": ["甘", "平"],
-                    "channel_entering": ["肝", "肾"],
-                    "functions": ["滋补肝肾", "益精明目"],
-                    "dosage": "6-12g",
-                    "contraindications": ["脾虚泄泻", "实热"]
-                }
-            },
-            {
                 "id": "poria",
                 "name": "茯苓",
                 "type": "herb",
@@ -473,76 +496,6 @@ class TCMKnowledgeBase:
                     "functions": ["利水渗湿", "健脾宁心"],
                     "dosage": "10-30g",
                     "contraindications": ["阴虚津伤"]
-                }
-            },
-            {
-                "id": "atractylodes",
-                "name": "白术",
-                "type": "herb",
-                "aliases": ["於术", "冬术"],
-                "description": "健脾益气，燥湿利水，止汗，安胎",
-                "properties": {
-                    "taste": ["甘", "苦", "温"],
-                    "channel_entering": ["脾", "胃"],
-                    "functions": ["健脾益气", "燥湿利水", "止汗", "安胎"],
-                    "dosage": "6-12g",
-                    "contraindications": ["阴虚内热", "津伤口渴"]
-                }
-            },
-            {
-                "id": "chinese_cinchona",
-                "name": "柴胡",
-                "type": "herb",
-                "aliases": ["北柴胡", "南柴胡", "醋柴胡"],
-                "description": "疏散退热，疏肝解郁，升举阳气",
-                "properties": {
-                    "taste": ["苦", "辛", "微寒"],
-                    "channel_entering": ["肝", "胆"],
-                    "functions": ["疏散退热", "疏肝解郁", "升举阳气"],
-                    "dosage": "3-10g",
-                    "contraindications": ["阴虚阳亢", "肝风内动"]
-                }
-            },
-            {
-                "id": "peony",
-                "name": "白芍",
-                "type": "herb",
-                "aliases": ["杭芍", "川芍", "炒白芍", "酒白芍"],
-                "description": "养血敛阴，柔肝止痛，平抑肝阳",
-                "properties": {
-                    "taste": ["苦", "酸", "微寒"],
-                    "channel_entering": ["肝", "脾"],
-                    "functions": ["养血敛阴", "柔肝止痛", "平抑肝阳"],
-                    "dosage": "6-15g",
-                    "contraindications": ["虚寒证", "阳衰寒盛"]
-                }
-            },
-            {
-                "id": "cinnamon",
-                "name": "肉桂",
-                "type": "herb",
-                "aliases": ["玉桂", "官桂"],
-                "description": "补火助阳，散寒止痛，温经通脉",
-                "properties": {
-                    "taste": ["辛", "甘", "大热"],
-                    "channel_entering": ["肾", "脾", "心", "肝"],
-                    "functions": ["补火助阳", "散寒止痛", "温经通脉"],
-                    "dosage": "1-5g",
-                    "contraindications": ["阴虚火旺", "里有实热"]
-                }
-            },
-            {
-                "id": "ginger",
-                "name": "干姜",
-                "type": "herb",
-                "aliases": ["淡干姜", "泡姜"],
-                "description": "温中散寒，回阳通脉，温肺化饮",
-                "properties": {
-                    "taste": ["辛", "热"],
-                    "channel_entering": ["脾", "胃", "肾", "心", "肺"],
-                    "functions": ["温中散寒", "回阳通脉", "温肺化饮"],
-                    "dosage": "3-10g",
-                    "contraindications": ["阴虚内热", "血热妄行"]
                 }
             },
             {
@@ -574,18 +527,6 @@ class TCMKnowledgeBase:
                 }
             },
             {
-                "id": "eight_precious_decoction",
-                "name": "八珍汤",
-                "type": "prescription",
-                "aliases": ["八珍"],
-                "description": "益气补血，主治气血两虚证",
-                "properties": {
-                    "composition": ["四君子汤", "四物汤"],
-                    "indication": "气血两虚证：面色苍白或萎黄，头晕目眩，气短懒言",
-                    "usage": "水煎服"
-                }
-            },
-            {
                 "id": "liuwei_dehuang_decoction",
                 "name": "六味地黄丸",
                 "type": "prescription",
@@ -610,90 +551,6 @@ class TCMKnowledgeBase:
                 }
             },
             {
-                "id": "baxiang_san",
-                "name": "八珍散",
-                "type": "prescription",
-                "aliases": [],
-                "description": "益气补血，主治气血两虚证",
-                "properties": {
-                    "composition": ["人参", "白术", "茯苓", "甘草", "熟地黄", "当归", "白芍", "川芎"],
-                    "indication": "气血两虚证",
-                    "usage": "水煎服"
-                }
-            },
-            {
-                "id": "liujunzi_decoction",
-                "name": "六君子汤",
-                "type": "prescription",
-                "aliases": [],
-                "description": "益气健脾，燥湿化痰，主治脾胃气虚兼痰湿证",
-                "properties": {
-                    "composition": ["人参", "白术", "茯苓", "甘草", "半夏", "陈皮"],
-                    "indication": "脾胃气虚兼痰湿证：食少便溏，痰多色白",
-                    "usage": "水煎服"
-                }
-            },
-            {
-                "id": "yinchen_decoction",
-                "name": "茵陈蒿汤",
-                "type": "prescription",
-                "aliases": [],
-                "description": "清热利湿退黄，主治湿热黄疸",
-                "properties": {
-                    "composition": ["茵陈", "栀子", "大黄"],
-                    "indication": "湿热黄疸：身目发黄，黄色鲜明，小便短赤",
-                    "usage": "水煎服"
-                }
-            },
-            {
-                "id": "liver_channel",
-                "name": "肝经",
-                "type": "meridian",
-                "aliases": ["足厥阴肝经"],
-                "description": "足厥阴肝经，循行于胁肋部，与肝胆疾病密切相关",
-                "properties": {
-                    "route": "足大趾→下肢内侧→腹部→胁肋→目系→巅顶",
-                    "related_organs": ["肝", "胆"],
-                    "main_points": ["太冲", "期门", "肝俞"]
-                }
-            },
-            {
-                "id": " spleen_channel",
-                "name": "脾经",
-                "type": "meridian",
-                "aliases": ["足太阴脾经"],
-                "description": "足太阴脾经，循行于下肢内侧后缘，与消化系统密切相关",
-                "properties": {
-                    "route": "足大趾→下肢内侧→腹部→胸部",
-                    "related_organs": ["脾", "胃"],
-                    "main_points": ["三阴交", "阴陵泉", "足三里"]
-                }
-            },
-            {
-                "id": "hegu",
-                "name": "合谷",
-                "type": "acupoint",
-                "aliases": ["虎口"],
-                "description": "手阳明大肠经穴，主治头痛、牙痛、面口疾病",
-                "properties": {
-                    "location": "手背第1、2掌骨间，当第2掌骨桡侧的中点处",
-                    "channel": "手阳明大肠经",
-                    "indications": ["头痛", "牙痛", "面口疾病", "发热", "汗证"]
-                }
-            },
-            {
-                "id": "taichong",
-                "name": "太冲",
-                "type": "acupoint",
-                "aliases": [],
-                "description": "足厥阴肝经穴，主治头痛、眩晕、胁痛、情志疾病",
-                "properties": {
-                    "location": "足背第1、2跖骨结合部前方凹陷中",
-                    "channel": "足厥阴肝经",
-                    "indications": ["头痛", "眩晕", "胁痛", "情志疾病", "月经不调"]
-                }
-            },
-            {
                 "id": "zusanli",
                 "name": "足三里",
                 "type": "acupoint",
@@ -703,41 +560,6 @@ class TCMKnowledgeBase:
                     "location": "小腿外侧，犊鼻下3寸，犊鼻与解溪连线上",
                     "channel": "足阳明胃经",
                     "indications": ["胃痛", "消化不良", "虚劳", "失眠", "高血压"]
-                }
-            },
-            {
-                "id": "sanyinjiao",
-                "name": "三阴交",
-                "type": "acupoint",
-                "aliases": [],
-                "description": "足太阴脾经穴，主治妇科、泌尿、生殖系统疾病",
-                "properties": {
-                    "location": "小腿内侧，内踝尖上3寸，胫骨内侧缘后际",
-                    "channel": "足太阴脾经",
-                    "indications": ["月经不调", "痛经", "不孕", "失眠", "眩晕"]
-                }
-            },
-            {
-                "id": "neiguan",
-                "name": "内关",
-                "type": "acupoint",
-                "aliases": [],
-                "description": "手厥阴心包经穴，主治心悸、胸闷、胃痛、呕吐",
-                "properties": {
-                    "location": "前臂前区，腕掌侧远端横纹上2寸，掌长肌腱与桡侧腕屈肌腱之间",
-                    "channel": "手厥阴心包经",
-                    "indications": ["心悸", "胸闷", "胃痛", "呕吐", "失眠"]
-                }
-            },
-            {
-                "id": "headache",
-                "name": "头痛",
-                "type": "disease",
-                "aliases": ["头疼", "头风"],
-                "description": "常见症状，可由多种原因引起",
-                "properties": {
-                    "common_types": ["风寒头痛", "风热头痛", "风湿头痛", "肝阳头痛", "血虚头痛", "痰浊头痛", "肾虚头痛"],
-                    "related_channels": ["肝经", "胆经", "膀胱经"]
                 }
             },
             {
@@ -772,47 +594,76 @@ class TCMKnowledgeBase:
                     "common_types": ["脾胃气虚", "脾胃湿热", "肝气犯胃", "食积"],
                     "related_organs": ["脾", "胃", "肝"]
                 }
-            }
+            },
+            {
+                "id": "headache",
+                "name": "头痛",
+                "type": "disease",
+                "aliases": ["头疼", "头风"],
+                "description": "常见症状，可由多种原因引起",
+                "properties": {
+                    "common_types": ["风寒头痛", "风热头痛", "风湿头痛", "肝阳头痛", "血虚头痛", "痰浊头痛", "肾虚头痛"],
+                    "related_channels": ["肝经", "胆经", "膀胱经"]
+                }
+            },
+            {
+                "id": "spleen_qi_sinking",
+                "name": "脾气下陷",
+                "type": "syndrome",
+                "aliases": ["中气下陷", "脾虚下陷", "气虚下陷"],
+                "description": "脾气虚弱，升举无力，以脘腹坠胀、久泻脱肛、脉弱等为常见症的证候",
+                "properties": {
+                    "category": "虚证",
+                    "related_organs": ["脾"],
+                    "common_symptoms": ["脘腹坠胀", "久泻脱肛", "头晕", "脉弱"]
+                }
+            },
+            {
+                "id": "lung_qi_deficiency",
+                "name": "肺气虚",
+                "type": "syndrome",
+                "aliases": ["肺气不足", "肺虚"],
+                "description": "肺气虚弱，以咳喘无力、少气懒言、声音低怯、自汗易感等为常见症的证候",
+                "properties": {
+                    "category": "虚证",
+                    "related_organs": ["肺"],
+                    "common_symptoms": ["咳喘无力", "少气懒言", "声音低怯", "自汗", "易感"]
+                }
+            },
         ]
-        return entities
     
     def _get_default_relations(self) -> List[Dict[str, Any]]:
         """获取默认关系"""
         return [
-            {"source": "qi_deficiency", "target": "spleen_qi_sinking", "relation_type": "may_cause", "weight": 0.8},
-            {"source": "qi_deficiency", "target": "lung_qi_deficiency", "relation_type": "may_cause", "weight": 0.8},
-            {"source": "yin_deficiency", "target": "kidney_yin_deficiency", "relation_type": "includes", "weight": 1.0},
-            {"source": "yang_deficiency", "target": "kidney_yang_deficiency", "relation_type": "includes", "weight": 1.0},
-            {"source": "yin_deficiency", "target": "heart_fire", "relation_type": "may_cause", "weight": 0.6},
-            {"source": "qi_stagnation", "target": "liver_fire", "relation_type": "may_cause", "weight": 0.7},
-            {"source": "spleen_qi_sinking", "target": "four_gentleman_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "qi_deficiency", "target": "four_gentleman_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "blood_deficiency", "target": "four_suben_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "qi_deficiency", "target": "blood_deficiency", "relation_type": "may_cause", "weight": 0.5},
-            {"source": "qi_deficiency", "target": "eight_precious_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "blood_deficiency", "target": "eight_precious_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "kidney_yin_deficiency", "target": "liuwei_dehuang_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "qi_stagnation", "target": "xiaoyao_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "blood_deficiency", "target": "xiaoyao_decoction", "relation_type": "treated_by", "weight": 0.7},
-            {"source": "phlegm_damp", "target": "liujunzi_decoction", "relation_type": "treated_by", "weight": 1.0},
-            {"source": "ginseng", "target": "four_gentleman_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "astragalus", "target": "four_gentleman_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "poria", "target": "four_gentleman_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "licorice", "target": "four_gentleman_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "rehmannia", "target": "four_suben_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "rehmannia", "target": "liuwei_dehuang_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "ginseng", "target": "eight_precious_decoction", "relation_type": "component_of", "weight": 1.0},
-            {"source": "liver_fire", "target": "taichong", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "qi_stagnation", "target": "taichong", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "qi_deficiency", "target": "zusanli", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "poor_appetite", "target": "zusanli", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "insomnia", "target": "sanyinjiao", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "insomnia", "target": "neiguan", "relation_type": "treated_by_acupoint", "weight": 1.0},
-            {"source": "fatigue", "target": "qi_deficiency", "relation_type": "related_to", "weight": 0.9},
-            {"source": "poor_appetite", "target": "qi_deficiency", "relation_type": "related_to", "weight": 0.9},
-            {"source": "headache", "target": "liver_fire", "relation_type": "may_cause", "weight": 0.7},
-            {"source": "headache", "target": "blood_deficiency", "relation_type": "may_cause", "weight": 0.6},
+            {"source": "阴虚", "target": "肾阴虚", "relation_type": "includes", "weight": 1.0},
+            {"source": "阳虚", "target": "肾阳虚", "relation_type": "includes", "weight": 1.0},
+            {"source": "阴虚", "target": "心火亢盛", "relation_type": "may_cause", "weight": 0.6},
+            {"source": "气郁", "target": "肝火上炎", "relation_type": "may_cause", "weight": 0.7},
+            {"source": "气虚", "target": "脾气下陷", "relation_type": "may_cause", "weight": 0.8},
+            {"source": "气虚", "target": "肺气虚", "relation_type": "may_cause", "weight": 0.8},
+            {"source": "脾气下陷", "target": "四君子汤", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气虚", "target": "四君子汤", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "血虚", "target": "四物汤", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气虚", "target": "血虚", "relation_type": "may_cause", "weight": 0.5},
+            {"source": "肾阴虚", "target": "六味地黄丸", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气郁", "target": "逍遥散", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "血虚", "target": "逍遥散", "relation_type": "treated_by", "weight": 0.7},
+            {"source": "人参", "target": "四君子汤", "relation_type": "component_of", "weight": 1.0},
+            {"source": "气虚", "target": "人参", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气虚", "target": "黄芪", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气虚", "target": "党参", "relation_type": "treated_by", "weight": 1.0},
+            {"source": "气虚", "target": "足三里", "relation_type": "treated_by_acupoint", "weight": 1.0},
+            {"source": "食欲不振", "target": "足三里", "relation_type": "treated_by_acupoint", "weight": 1.0},
+            {"source": "失眠", "target": "心火亢盛", "relation_type": "related_to", "weight": 0.8},
+            {"source": "失眠", "target": "肾阴虚", "relation_type": "related_to", "weight": 0.8},
+            {"source": "疲劳", "target": "气虚", "relation_type": "related_to", "weight": 0.9},
+            {"source": "疲劳", "target": "血虚", "relation_type": "related_to", "weight": 0.8},
+            {"source": "食欲不振", "target": "气虚", "relation_type": "related_to", "weight": 0.9},
+            {"source": "头痛", "target": "肝火上炎", "relation_type": "may_cause", "weight": 0.7},
+            {"source": "头痛", "target": "血虚", "relation_type": "may_cause", "weight": 0.6},
         ]
+    
+    # ==================== 查询接口 ====================
     
     def query_by_symptoms(
         self,
@@ -832,81 +683,164 @@ class TCMKnowledgeBase:
         results = []
         
         for symptom in symptoms:
-            entity = self.kg.find_entity_by_name(symptom)
-            if entity:
-                related = self.kg.get_related_entities(
-                    entity.id,
-                    relation_types=["may_cause", "related_to"],
-                    depth=2
-                )
-                
-                for rel_entity, rel_type, weight in related:
-                    if rel_entity.type == "syndrome":
-                        syndrome_info = self._get_syndrome_info(rel_entity)
-                        treatment = self._find_treatment_for_syndrome(rel_entity.id)
-                        
-                        results.append({
-                            "symptom": symptom,
-                            "syndrome": syndrome_info,
-                            "treatment": treatment,
-                            "confidence": weight,
-                            "source": "knowledge_graph"
-                        })
+            # 查找症状实体
+            symptom_entity = self._find_entity(symptom)
+            if not symptom_entity:
+                continue
+            
+            # 查找相关实体
+            related = self._get_related_entities(
+                symptom_entity["name"],
+                relation_types=["may_cause", "related_to", "treated_by"]
+            )
+            
+            for rel_entity, rel_type, weight in related:
+                if rel_entity.get("type") == "syndrome":
+                    syndrome_info = self._get_syndrome_info(rel_entity)
+                    treatment = self._find_treatment_for_syndrome(rel_entity["name"])
+                    
+                    results.append({
+                        "symptom": symptom,
+                        "syndrome": syndrome_info,
+                        "treatment": treatment,
+                        "confidence": weight,
+                        "source": "knowledge_graph"
+                    })
         
         results.sort(key=lambda x: x["confidence"], reverse=True)
         return results[:max_results]
     
-    def _get_syndrome_info(self, syndrome_entity: TCMEntity) -> Dict[str, Any]:
+    def _find_entity(self, name: str) -> Optional[Dict]:
+        """查找实体"""
+        # 尝试 Neo4j
+        entity = self._get_entity_neo4j(name)
+        if entity:
+            return entity
+        
+        # 尝试 Mock 模式
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            return self._find_mock_entity(name)
+        
+        return None
+    
+    def _get_related_entities(
+        self,
+        name: str,
+        relation_types: Optional[List[str]] = None,
+        depth: int = 1
+    ) -> List[Tuple[Dict, str, float]]:
+        """获取相关实体"""
+        results = []
+        
+        # 从 Neo4j 获取
+        relations = self._get_relations_by_entity_neo4j(name)
+        
+        for rel in relations:
+            src = rel.get("src", "")
+            tgt = rel.get("tgt", "")
+            rel_type = rel.get("keywords", "")
+            
+            # 确定要获取的实体名称
+            related_name = tgt if src == name else src
+            
+            # 过滤关系类型
+            if relation_types and rel_type not in relation_types:
+                continue
+            
+            # 获取实体
+            related_entity = self._get_entity_neo4j(related_name)
+            if related_entity:
+                results.append((related_entity, rel_type, rel.get("weight", 1.0)))
+        
+        # 从 Mock 获取
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            for rel in self._mock_relations:
+                src = rel.get("source", "")
+                tgt = rel.get("target", "")
+                rel_type = rel.get("relation_type", "")
+                
+                if src == name or tgt == name:
+                    if relation_types and rel_type not in relation_types:
+                        continue
+                    
+                    related_name = tgt if src == name else src
+                    related_entity = self._find_mock_entity(related_name)
+                    
+                    if related_entity:
+                        results.append((related_entity, rel_type, rel.get("weight", 1.0)))
+        
+        return results
+    
+    def _get_syndrome_info(self, syndrome_entity: Dict) -> Dict[str, Any]:
         """获取证型详细信息"""
-        related_entities = self.kg.get_related_entities(
-            syndrome_entity.id,
-            depth=1
-        )
+        related = self._get_related_entities(syndrome_entity.get("name", ""), depth=1)
         
         related_herbs = []
         related_prescriptions = []
         related_acupoints = []
         
-        for entity, rel_type, weight in related_entities:
-            if entity.type == "herb":
+        for entity, rel_type, weight in related:
+            entity_type = entity.get("type", "")
+            
+            if entity_type == "herb":
                 related_herbs.append({
-                    "name": entity.name,
-                    "description": entity.description,
+                    "name": entity.get("name", ""),
+                    "description": entity.get("description", ""),
                     "relation": rel_type
                 })
-            elif entity.type == "prescription":
+            elif entity_type == "prescription":
+                # 尝试解析 properties
+                props = {}
+                try:
+                    if "properties" in entity:
+                        if isinstance(entity["properties"], str):
+                            props = json.loads(entity["properties"])
+                        else:
+                            props = entity.get("properties", {})
+                except:
+                    pass
+                
                 related_prescriptions.append({
-                    "name": entity.name,
-                    "description": entity.description,
-                    "composition": entity.properties.get("composition", []),
-                    "indication": entity.properties.get("indication", ""),
+                    "name": entity.get("name", ""),
+                    "description": entity.get("description", ""),
+                    "composition": props.get("composition", []),
+                    "indication": props.get("indication", ""),
                     "relation": rel_type
                 })
-            elif entity.type == "acupoint":
+            elif entity_type == "acupoint":
                 related_acupoints.append({
-                    "name": entity.name,
-                    "location": entity.properties.get("location", ""),
-                    "indications": entity.properties.get("indications", []),
+                    "name": entity.get("name", ""),
+                    "description": entity.get("description", ""),
                     "relation": rel_type
                 })
         
+        # 解析 properties
+        props = {}
+        try:
+            if "properties" in syndrome_entity:
+                if isinstance(syndrome_entity["properties"], str):
+                    props = json.loads(syndrome_entity["properties"])
+                else:
+                    props = syndrome_entity.get("properties", {})
+        except:
+            pass
+        
         return {
-            "name": syndrome_entity.name,
-            "description": syndrome_entity.description,
-            "category": syndrome_entity.properties.get("category", ""),
-            "related_organs": syndrome_entity.properties.get("related_organs", []),
-            "common_symptoms": syndrome_entity.properties.get("common_symptoms", []),
+            "name": syndrome_entity.get("name", ""),
+            "description": syndrome_entity.get("description", ""),
+            "category": props.get("category", ""),
+            "related_organs": props.get("related_organs", []),
+            "common_symptoms": props.get("common_symptoms", []),
             "related_herbs": related_herbs,
             "related_prescriptions": related_prescriptions,
             "related_acupoints": related_acupoints
         }
     
-    def _find_treatment_for_syndrome(self, syndrome_id: str) -> Optional[Dict[str, Any]]:
+    def _find_treatment_for_syndrome(self, syndrome_name: str) -> Optional[Dict[str, Any]]:
         """查找证型的治疗方案"""
-        related = self.kg.get_related_entities(
-            syndrome_id,
-            relation_types=["treated_by", "treated_by_acupoint"],
-            depth=1
+        related = self._get_related_entities(
+            syndrome_name,
+            relation_types=["treated_by", "treated_by_acupoint", "treated_by"]
         )
         
         treatment = {
@@ -915,18 +849,40 @@ class TCMKnowledgeBase:
         }
         
         for entity, rel_type, weight in related:
-            if entity.type == "prescription":
+            entity_type = entity.get("type", "")
+            
+            if entity_type == "prescription":
+                props = {}
+                try:
+                    if "properties" in entity:
+                        if isinstance(entity["properties"], str):
+                            props = json.loads(entity["properties"])
+                        else:
+                            props = entity.get("properties", {})
+                except:
+                    pass
+                
                 treatment["herbal_prescriptions"].append({
-                    "name": entity.name,
-                    "composition": entity.properties.get("composition", []),
-                    "indication": entity.properties.get("indication", ""),
-                    "modifications": entity.properties.get("modifications", {})
+                    "name": entity.get("name", ""),
+                    "composition": props.get("composition", []),
+                    "indication": props.get("indication", ""),
+                    "modifications": props.get("modifications", {})
                 })
-            elif entity.type == "acupoint":
+            elif entity_type == "acupoint":
+                props = {}
+                try:
+                    if "properties" in entity:
+                        if isinstance(entity["properties"], str):
+                            props = json.loads(entity["properties"])
+                        else:
+                            props = entity.get("properties", {})
+                except:
+                    pass
+                
                 treatment["acupoints"].append({
-                    "name": entity.name,
-                    "location": entity.properties.get("location", ""),
-                    "indications": entity.properties.get("indications", [])
+                    "name": entity.get("name", ""),
+                    "location": props.get("location", ""),
+                    "indications": props.get("indications", [])
                 })
         
         return treatment if treatment["herbal_prescriptions"] or treatment["acupoints"] else None
@@ -946,20 +902,20 @@ class TCMKnowledgeBase:
         Returns:
             实体详情和关联信息
         """
-        entity = self.kg.find_entity_by_name(name)
+        entity = self._find_entity(name)
         if not entity:
             return {"error": f"未找到实体: {name}"}
         
         result = {
-            "entity": entity.to_dict(),
-            "type": entity.type
+            "entity": entity,
+            "type": entity.get("type", "")
         }
         
         if include_related:
-            related = self.kg.get_related_entities(entity.id, depth=1)
+            related = self._get_related_entities(entity.get("name", ""), depth=1)
             result["related"] = [
                 {
-                    "entity": r[0].to_dict(),
+                    "entity": r[0],
                     "relation": r[1],
                     "weight": r[2]
                 }
@@ -988,31 +944,73 @@ class TCMKnowledgeBase:
         keywords = self._extract_keywords(query)
         results = []
         
-        for entity in self.kg.entity_index.values():
-            if entity_types and entity.type not in entity_types:
+        # 从 Neo4j 获取所有实体
+        all_entities = self._list_entities_neo4j()
+        
+        # 从 Mock 获取实体
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            for entity in self._mock_entities.values():
+                if entity not in all_entities:
+                    all_entities.append(entity)
+        
+        for entity in all_entities:
+            entity_type = entity.get("type", "")
+            
+            if entity_types and entity_type not in entity_types:
                 continue
             
             score = 0.0
+            entity_name = entity.get("name", "")
             
-            if query.lower() in entity.name.lower():
+            # 名称匹配
+            if query.lower() in entity_name.lower():
                 score += 0.5
             
-            for alias in entity.aliases:
+            # 别名匹配
+            aliases = []
+            try:
+                if "aliases" in entity:
+                    if isinstance(entity["aliases"], str):
+                        aliases = json.loads(entity["aliases"])
+                    else:
+                        aliases = entity.get("aliases", [])
+            except:
+                pass
+            
+            for alias in aliases:
                 if query.lower() in alias.lower():
                     score += 0.3
+                    break
             
+            # 关键词匹配
             if keywords:
+                description = entity.get("description", "")
+                
+                # 尝试解析 properties
+                props = {}
+                try:
+                    if "properties" in entity:
+                        if isinstance(entity["properties"], str):
+                            props = json.loads(entity["properties"])
+                        else:
+                            props = entity.get("properties", {})
+                except:
+                    pass
+                
                 for keyword in keywords:
-                    if keyword in entity.description:
+                    if keyword in description:
                         score += 0.2
-                    for symptom in entity.properties.get("common_symptoms", []):
+                    
+                    # 匹配 common_symptoms
+                    for symptom in props.get("common_symptoms", []):
                         if keyword in symptom:
                             score += 0.3
             
             if score > 0:
                 results.append({
-                    "entity": entity.to_dict(),
-                    "score": min(score, 1.0)
+                    "entity": entity,
+                    "score": min(score, 1.0),
+                    "content": entity.get("description", "")
                 })
         
         results.sort(key=lambda x: x["score"], reverse=True)
@@ -1039,12 +1037,12 @@ class TCMKnowledgeBase:
         Returns:
             个性化治疗建议
         """
-        entity = self.kg.find_entity_by_name(syndrome_name)
-        if not entity or entity.type != "syndrome":
+        entity = self._find_entity(syndrome_name)
+        if not entity or entity.get("type") != "syndrome":
             return {"error": f"未找到证型: {syndrome_name}"}
         
         syndrome_info = self._get_syndrome_info(entity)
-        treatment = self._find_treatment_for_syndrome(entity.id)
+        treatment = self._find_treatment_for_syndrome(entity.get("name", ""))
         
         recommendations = {
             "syndrome_analysis": syndrome_info,
@@ -1058,27 +1056,41 @@ class TCMKnowledgeBase:
     
     def _generate_lifestyle_advice(
         self,
-        syndrome: TCMEntity,
+        syndrome: Dict,
         patient_info: Optional[Dict[str, Any]] = None
     ) -> List[str]:
         """生成生活建议"""
         advice_list = []
         
-        if "虚" in syndrome.properties.get("category", ""):
+        # 解析 properties
+        props = {}
+        try:
+            if "properties" in syndrome:
+                if isinstance(syndrome["properties"], str):
+                    props = json.loads(syndrome["properties"])
+                else:
+                    props = syndrome.get("properties", {})
+        except:
+            pass
+        
+        category = props.get("category", "")
+        name = syndrome.get("name", "")
+        
+        if "虚" in category:
             advice_list.extend([
                 "注意休息，避免过度劳累",
                 "适当进行轻度运动，如散步、太极拳",
                 "保持充足睡眠"
             ])
         
-        if "热" in syndrome.name or "火" in syndrome.name:
+        if "热" in name or "火" in name:
             advice_list.extend([
                 "保持情绪稳定，避免急躁易怒",
                 "避免辛辣刺激性食物",
                 "多饮水，保持大便通畅"
             ])
         
-        if "郁" in syndrome.name or "气滞" in syndrome.name:
+        if "郁" in name or "气滞" in name:
             advice_list.extend([
                 "保持心情舒畅，适当进行放松训练",
                 "多参加户外活动",
@@ -1087,29 +1099,31 @@ class TCMKnowledgeBase:
         
         return advice_list
     
-    def _generate_diet_advice(self, syndrome: TCMEntity) -> List[str]:
+    def _generate_diet_advice(self, syndrome: Dict) -> List[str]:
         """生成饮食建议"""
         advice_list = []
         
-        if "yin" in syndrome.id or "阴虚" in syndrome.name:
+        name = syndrome.get("name", "")
+        
+        if "阴虚" in name:
             advice_list.extend([
                 "宜食用滋阴润燥的食物，如银耳、百合、梨等",
                 "少吃辛辣刺激性食物",
                 "避免油炸、烧烤类食物"
             ])
-        elif "yang" in syndrome.id or "阳虚" in syndrome.name:
+        elif "阳虚" in name:
             advice_list.extend([
                 "宜食用温补食物，如羊肉、核桃、桂圆等",
                 "少吃生冷寒凉食物",
                 "可适当食用姜、葱、蒜等温性调料"
             ])
-        elif "qi" in syndrome.id or "气虚" in syndrome.name:
+        elif "气虚" in name:
             advice_list.extend([
                 "宜食用补气食物，如山药、黄芪、红枣等",
                 "少吃耗气食物，如萝卜、莱菔子等",
                 "避免过度思虑"
             ])
-        elif "痰湿" in syndrome.name or "湿" in syndrome.name:
+        elif "痰湿" in name or "湿" in name:
             advice_list.extend([
                 "宜食用清淡易消化的食物",
                 "少吃甜腻、油腻、生冷食物",
@@ -1118,14 +1132,27 @@ class TCMKnowledgeBase:
         
         return advice_list
     
-    def _generate_precautions(self, syndrome: TCMEntity) -> List[str]:
+    def _generate_precautions(self, syndrome: Dict) -> List[str]:
         """生成注意事项"""
         precautions = []
         
-        if "虚" in syndrome.properties.get("category", ""):
+        props = {}
+        try:
+            if "properties" in syndrome:
+                if isinstance(syndrome["properties"], str):
+                    props = json.loads(syndrome["properties"])
+                else:
+                    props = syndrome.get("properties", {})
+        except:
+            pass
+        
+        category = props.get("category", "")
+        name = syndrome.get("name", "")
+        
+        if "虚" in category:
             precautions.append("避免过度劳累和剧烈运动")
         
-        if "热" in syndrome.name or "火" in syndrome.name:
+        if "热" in name or "火" in name:
             precautions.append("避免情绪激动和高温环境")
         
         precautions.extend([
@@ -1134,3 +1161,61 @@ class TCMKnowledgeBase:
         ])
         
         return precautions
+    
+    # ==================== CRUD 操作接口 ====================
+    
+    def add_entity(self, entity: TCMEntity) -> None:
+        """添加实体到知识库"""
+        self._upsert_entity_neo4j(entity)
+        
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            self._mock_entities[entity.name] = entity.to_dict()
+    
+    def add_relation(self, relation: TCMRelation) -> None:
+        """添加关系到知识库"""
+        self._upsert_relation_neo4j(relation)
+        
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            self._mock_relations.append(relation.to_dict())
+    
+    def delete_entity(self, name: str) -> bool:
+        """删除实体"""
+        store = self._get_neo4j_store()
+        if store:
+            result = store.delete_entity(name)
+            if result and hasattr(self, "_mock_mode") and self._mock_mode:
+                self._mock_entities.pop(name, None)
+            return result
+        
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            self._mock_entities.pop(name, None)
+            return True
+        
+        return False
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        store = self._get_neo4j_store()
+        if store:
+            return store.get_stats()
+        
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            return {
+                "entities": len(self._mock_entities),
+                "relations": len(self._mock_relations),
+                "mode": "mock"
+            }
+        
+        return {"mode": "unknown"}
+    
+    def clear_all(self) -> None:
+        """清空所有数据"""
+        store = self._get_neo4j_store()
+        if store:
+            store.clear_all()
+        
+        if hasattr(self, "_mock_mode") and self._mock_mode:
+            self._mock_entities.clear()
+            self._mock_relations.clear()
+        
+        logger.info("知识库已清空")

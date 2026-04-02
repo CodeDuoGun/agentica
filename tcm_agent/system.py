@@ -3,33 +3,49 @@
 TCM Consultation System - 主协调系统
 中医问诊系统主入口
 
-功能：
-1. 统一入口，整合所有组件
-2. 意图路由（普通咨询/问诊咨询/非医疗咨询）
-3. 多轮问诊流程管理
-4. 结构化病历生成
-5. 会话管理
+架构：
+1. 意图识别 -> 普通咨询 / 医疗问诊 / 其他问题
+2. 普通咨询 -> RAG 检索回答
+3. 医疗问诊 -> 多轮问答收集槽位信息
+4. 完成后 -> 异步生成结构化病历
 """
 import asyncio
-from typing import Dict, Any, Optional, List, AsyncIterator, Callable
+import traceback
+import re
+from typing import Dict, Any, Optional, List, AsyncIterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
 from agentica import Agent, QwenChat
 
-from tcm_agent.agent import TCMDiagnosisAgent
-from tcm_agent.knowledge import TCMKnowledgeBase
-from tcm_agent.intention import IntentionRecognitionAgent, VisitTypeRecognitionAgent
 from tcm_agent.models import (
     ConsultationState,
     ConsultationPhase,
+    ConsultationVisitType,
+    ConsultationSlot,
+    SlotStatus,
+    SlotCollectionStatus,
     IntentionCategory,
     IntentionResult,
     ConsultationRecord,
+    SymptomInfo,
     MedicalHistory,
+    AllergyInfo,
+    PhysicalInfo,
+    DiagnosisInfo,
+    TreatmentPlan,
+    PatientInfo,
+    CONSULTATION_SLOTS_DEFINITION,
+    REQUIRED_SLOTS,
+    SLOT_GROUPS,
     get_enum_value,
+    get_slot_by_key,
+    get_next_slot,
+    is_required_slot,
 )
+from tcm_agent.knowledge import TCMKnowledgeBase
+from tcm_agent.intention import IntentionRecognitionAgent
 from log import logger
 
 
@@ -54,134 +70,167 @@ class ConsultationInterruptReason(Enum):
 class ConsultationSession:
     """问诊会话"""
     session_id: str
-    state: ConsultationState = field(default_factory=ConsultationState)
     status: SessionStatus = SessionStatus.ACTIVE
-    interrupt_reason: Optional[ConsultationInterruptReason] = None
+    state: ConsultationState = field(default_factory=ConsultationState)
+    messages: List[Dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
-    messages: List[Dict[str, Any]] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class TCMConsultationSystem:
     """
-    中医问诊系统主类
+    中医问诊系统主协调器
     
-    统一管理问诊流程，整合：
-    - 意图识别和路由
-    - 问诊流程管理
-    - 结构化病历生成
-    - 中断场景处理
-    
-    支持：
-    - 同步/异步调用
-    - 流式输出
-    - 会话管理
+    工作流程：
+    1. 接收用户消息
+    2. 意图识别（普通咨询 / 医疗问诊 / 其他问题）
+    3. 根据意图路由到不同 Agent
+    4. 医疗问诊：多轮槽位收集
+    5. 完成：异步生成结构化病历
     """
     
-    # 挂号推荐地址
-    HOSPITAL_REFERRAL = "线上中医问诊"
-    
-    # 结束话术模板
-    ENDING_MESSAGES = {
-        ConsultationInterruptReason.MAX_TURNS_EXCEEDED: 
-            "本次问诊已达到最大对话轮次（{max_turns}轮），建议您整理问题后重新开始咨询。如需紧急就医，请前往线下医院就诊。",
-        ConsultationInterruptReason.PATIENT_QUIT: 
-            "感谢您的咨询，祝您身体健康！如果有任何问题，欢迎随时来问诊。",
-        ConsultationInterruptReason.ABNORMAL_ERROR: 
-            "抱歉，系统遇到了问题，请您稍后重新开始问诊。如有紧急情况，请前往线下医院就诊。",
-        ConsultationInterruptReason.PHASE_COMPLETE: 
-            "问诊已完成，您可以根据上述建议进行调理。如有需要，请保存本次问诊记录。如有其他问题，欢迎随时咨询。",
-    }
+    HOSPITAL_REFERRAL = "中医门诊部"
     
     def __init__(
         self,
-        model: Any = None,
-        knowledge_base: Optional[TCMKnowledgeBase] = None,
         enable_stream: bool = True,
         max_turns: int = 50,
-        max_consultation_turns: int = 30,
     ):
-        """
-        初始化问诊系统
-        
-        Args:
-            model: LLM 模型
-            knowledge_base: 知识库
-            enable_stream: 启用流式输出
-            max_turns: 最大对话轮次（包含非问诊轮次）
-            max_consultation_turns: 最大问诊轮次
-        """
-        # 为不同组件创建独立的 model 实例，避免 response_format 冲突
-        self.model = model or QwenChat(id="qwen-plus")
-        self.intention_model = QwenChat(id="qwen-plus")
-        self.consultation_model = QwenChat(id="qwen-plus")
-        
-        self.knowledge_base = knowledge_base or TCMKnowledgeBase()
-        self.knowledge_base.initialize()
-        
-        self.diagnosis_agent = TCMDiagnosisAgent(
-            model=self.consultation_model,
-            knowledge_base=self.knowledge_base,
-            enable_stream=enable_stream,
-        )
-        
-        self.intention_agent = IntentionRecognitionAgent(model=self.intention_model)
-        self.visit_type_agent = VisitTypeRecognitionAgent(model=self.consultation_model)
-        
         self.enable_stream = enable_stream
         self.max_turns = max_turns
-        self.max_consultation_turns = max_consultation_turns
         
+        # 初始化知识库
+        self.knowledge_base = TCMKnowledgeBase()
+        self.knowledge_base.initialize()
+        
+        # 初始化 Agent
+        self._init_agents()
+        
+        # 当前会话
         self.current_session: Optional[ConsultationSession] = None
-        self.sessions: Dict[str, ConsultationSession] = {}
-        
-        self._on_record_generated: Optional[Callable] = None
     
-    def set_record_callback(self, callback: Callable[[ConsultationRecord], None]):
-        """设置病历生成完成后的回调"""
-        self._on_record_generated = callback
-    
-    async def start_session(self, session_id: Optional[str] = None) -> str:
-        """开始新会话"""
-        if session_id is None:
-            session_id = datetime.now().strftime("%Y%m%d%H%M%S%f")
+    def _init_agents(self):
+        """初始化各个 Agent"""
+        # 基础模型
+        base_model = QwenChat(id="qwen-plus", temperature=0.7)
         
-        self.diagnosis_agent.reset()
+        # 意图识别 Agent
+        intention_model = QwenChat(id="qwen-plus", temperature=0.1)
+        self.intention_agent = IntentionRecognitionAgent(model=intention_model)
+        
+        # 普通咨询 Agent（带 RAG）
+        self._init_general_consultation_agent()
+        
+        # 医疗问诊 Agent
+        self._init_medical_consultation_agent()
+    
+    def _init_general_consultation_agent(self):
+        """初始化普通咨询 Agent"""
+        model = QwenChat(id="qwen-plus", temperature=0.7)
+        
+        system_prompt = """你是一个专业的中医健康咨询助手。请根据提供的参考信息回答用户的问题。
+
+参考信息来自中医知识库，包含相关的症状、疾病、治疗方案等内容。
+请结合参考信息给出专业、准确的回答。
+
+注意：
+1. 如果参考信息中有相关内容，优先基于参考信息回答
+2. 如果没有相关参考信息，可以基于你的中医知识回答
+3. 如果问题超出你的能力范围，建议用户就医
+4. 回答要简洁、专业、易懂"""
+        
+        self.general_consultation_agent = Agent(
+            model=model,
+            name="GeneralConsultationAgent",
+            instructions=system_prompt,
+            add_history_to_messages=True,
+            history_window=10,
+        )
+    
+    def _init_medical_consultation_agent(self):
+        """初始化医疗问诊 Agent"""
+        model = QwenChat(id="qwen-plus", temperature=0.7)
+        
+        system_prompt = """你是一个专业的中医问诊助手，正在进行多轮问诊。
+
+你的任务是：
+1. 根据当前的问诊阶段，向用户询问相关信息
+2. 从用户的回答中提取有效的槽位信息
+3. 更新问诊状态
+4. 决定是否继续收集信息或结束问诊
+
+问诊槽位包括：
+- 基本信息：性别、年龄
+- 主诉：主要症状、持续时间、具体表现
+- 既往史：之前类似病史
+- 过敏史：过敏原和反应
+- 婚育史：婚育情况
+- 个人史：生活习惯（抽烟、喝酒等）
+- 家族史：遗传病史
+- 舌照：舌象照片
+- 面照：面部照片
+- 检查报告：相关检查结果
+- 补充信息：其他需要说明的情况
+
+每次只询问一个问题，简洁明了。
+收集到足够信息后，进入诊断环节。"""
+        
+        self.medical_consultation_agent = Agent(
+            model=model,
+            name="MedicalConsultationAgent",
+            instructions=system_prompt,
+            add_history_to_messages=True,
+            history_window=20,
+        )
+    
+    async def start_session(self, session_id: str, visit_type: str = "first_visit"):
+        """启动新会话"""
+        state = ConsultationState(session_id=session_id)
+        
+        # 设置就诊类型
+        try:
+            state.visit_type = ConsultationVisitType(visit_type)
+        except ValueError:
+            state.visit_type = ConsultationVisitType.FIRST_VISIT
+        
+        # 初始化槽位状态
+        state.pending_slots = list(REQUIRED_SLOTS)
+        for slot_def in CONSULTATION_SLOTS_DEFINITION:
+            if slot_def["key"] not in state.slot_status:
+                state.slot_status[slot_def["key"]] = SlotCollectionStatus(
+                    key=slot_def["key"],
+                    status=SlotStatus.PENDING if slot_def["key"] in state.pending_slots else SlotStatus.SKIPPED
+                )
         
         self.current_session = ConsultationSession(
             session_id=session_id,
-            state=self.diagnosis_agent.get_state(),
+            state=state,
         )
-        self.current_session.state.max_turns = self.max_consultation_turns
-        self.sessions[session_id] = self.current_session
         
-        logger.info(f"Session started: {session_id}")
+        logger.info(f"Session started: {session_id}, visit_type: {visit_type}")
         return session_id
     
     async def chat(self, message: str) -> str:
         """
-        处理单条消息
+        处理用户消息的入口
         
-        Args:
-            message: 用户消息
-            
-        Returns:
-            str: 响应内容
+        流程：
+        1. 意图识别
+        2. 根据意图路由
+        3. 返回响应
         """
         if not self.current_session:
-            await self.start_session()
+            return "会话未初始化"
         
-        if self.current_session.status != SessionStatus.ACTIVE:
-            await self.start_session()
+        state = self.current_session.state
         
         # 检查轮数限制
-        if self.current_session.state.turn_count >= self.max_turns:
+        if state.turn_count >= state.max_turns:
             return await self._handle_interrupt(
                 ConsultationInterruptReason.MAX_TURNS_EXCEEDED
             )
         
-        self.current_session.state.turn_count += 1
+        state.turn_count += 1
         
         # 添加用户消息
         self.current_session.messages.append({
@@ -191,19 +240,22 @@ class TCMConsultationSystem:
         })
         
         try:
-            # 意图识别
+            # ========== 步骤1：意图识别 ==========
             intention_result = await self.intention_agent.recognize(
                 message,
                 self._get_intention_context()
             )
             
-            logger.info(f"Intention recognized: {intention_result}")
+            logger.info(f"Intention recognized: {intention_result.category}")
             
-            # 根据意图类别路由
+            # 更新当前意图
+            state.current_intent = intention_result.category
+            
+            # ========== 步骤2：根据意图路由 ==========
             response = await self._route_by_intention(intention_result, message)
             
         except Exception as e:
-            logger.error(f"Error in chat: {e}")
+            logger.error(f"Error in chat: {traceback.format_exc()}")
             return await self._handle_interrupt(
                 ConsultationInterruptReason.ABNORMAL_ERROR,
                 error=str(e)
@@ -216,365 +268,9 @@ class TCMConsultationSystem:
             "timestamp": datetime.now().isoformat(),
         })
         
-        self.current_session.state = self.diagnosis_agent.get_state()
         self.current_session.updated_at = datetime.now()
         
         return response
-    
-    async def _route_by_intention(
-        self, 
-        intention: IntentionResult, 
-        message: str
-    ) -> str:
-        """根据意图类别路由"""
-        category = get_enum_value(intention.category)
-        
-        if category == "non_medical":
-            return self._get_non_medical_response()
-        
-        elif category == "general_medical":
-            return await self._handle_general_medical(intention, message)
-        
-        elif category == "consultation":
-            return await self._handle_consultation(intention, message)
-        
-        else:
-            return "抱歉，我无法理解您的问题，请重新描述。"
-    
-    def _get_non_medical_response(self) -> str:
-        """非医疗咨询不回复"""
-        return "问点医疗的"  # 返回空字符串，不进行回复
-    
-    async def _handle_general_medical(
-        self, 
-        intention: IntentionResult, 
-        message: str
-    ) -> str:
-        """处理普通医疗问题咨询"""
-        # 查询知识库获取相关信息
-        #TODO 修改为graphrag  mixquery
-        kb_results = self.knowledge_base.search_similar(message, max_results=3)
-        
-        # 构建回复
-        response_parts = []
-        
-        if intention.suggested_response:
-            response_parts.append(intention.suggested_response)
-        
-        # 添加知识库相关信息
-        if kb_results:
-            response_parts.append("\n\n以下是相关参考信息：")
-            for i, result in enumerate[Dict[str, Any]](kb_results[:2], 1):
-                response_parts.append(f"\n{i}. {result.get('content', '')[:200]}")
-        
-        # 主动推荐挂号
-        response_parts.append(
-            f"\n\n如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
-        )
-        
-        return "".join(response_parts)
-    
-    async def _handle_consultation(
-        self, 
-        intention: IntentionResult, 
-        message: str
-    ) -> str:
-        """处理问诊咨询"""
-        current_phase = get_enum_value(self.current_session.state.current_phase)
-        
-        # 根据阶段处理
-        if current_phase == "welcome":
-            return await self._handle_welcome_phase(message, intention)
-        elif current_phase == "basic_info":
-            return await self._handle_basic_info_phase(message)
-        elif current_phase == "chief_complaint":
-            return await self._handle_chief_complaint_phase(message, intention)
-        elif current_phase == "medical_history":
-            return await self._handle_medical_history_phase(message, intention)
-        elif current_phase == "attachments":
-            return await self._handle_attachments_phase(message)
-        elif current_phase == "supplementary":
-            return await self._handle_supplementary_phase(message)
-        elif current_phase == "complete":
-            return await self._handle_consultation_complete()
-        else:
-            return await self.diagnosis_agent.run(message)
-    
-    async def _handle_welcome_phase(self, message: str, intention: IntentionResult) -> str:
-        """处理欢迎阶段"""
-        # 识别就诊类型
-        try:
-            visit_type = await self.visit_type_agent.recognize(message)
-            self.current_session.state.visit_type = visit_type
-        except Exception:
-            # 默认初诊
-            pass
-        
-        # 更新阶段
-        self.current_session.state.current_phase = ConsultationPhase.BASIC_INFO
-        
-        visit_type_text = "复诊" if self.current_session.state.visit_type == "follow_up_visit" else "初诊"
-        
-        welcome_message = f"您好！欢迎来到中医智能问诊系统。"
-        
-        if visit_type_text == "复诊":
-            welcome_message += " 好的，我了解到您是复诊患者。请问您这次有什么需要咨询的呢？"
-        else:
-            welcome_message += " 我了解到您是初次就诊。为了更好地为您服务，我需要了解一些基本信息。"
-        
-        return welcome_message
-    
-    async def _handle_basic_info_phase(self, message: str) -> str:
-        """处理基本信息收集阶段"""
-        # 提取基本信息
-        patient_info = await self.diagnosis_agent.patient_info_extractor.extract(
-            message,
-            self.current_session.state.patient_info
-        )
-        self.current_session.state.patient_info = patient_info
-        
-        # 检查是否收集完成
-        info_complete = (
-            patient_info.age is not None or
-            patient_info.name is not None
-        )
-        
-        if info_complete:
-            self.current_session.state.current_phase = ConsultationPhase.CHIEF_COMPLAINT
-            return f"好的，已记录您的基础信息。接下来请描述一下您的主要不适症状（主诉）。"
-        
-        return "请告诉我您的年龄和性别，以便我更好地为您诊断。"
-    
-    async def _handle_chief_complaint_phase(
-        self, 
-        message: str, 
-        intention: IntentionResult
-    ) -> str:
-        """处理主诉阶段"""
-        # 提取症状
-        symptoms_raw = await self.diagnosis_agent.symptom_extractor.extract(message)
-        symptoms = self.diagnosis_agent._normalize_symptoms(symptoms_raw)
-        
-        for symptom in symptoms:
-            if symptom.name not in [s.name for s in self.current_session.state.symptoms]:
-                self.current_session.state.symptoms.append(symptom)
-        
-        # 更新主诉
-        if intention.entities.get("symptom"):
-            self.current_session.state.chief_complaint = ", ".join(intention.entities["symptom"])
-        
-        # 检查轮数限制
-        consultation_turns = self._count_consultation_turns()
-        if consultation_turns >= self.max_consultation_turns:
-            return await self._handle_interrupt(ConsultationInterruptReason.MAX_TURNS_EXCEEDED)
-        
-        # 如果症状已收集，询问病史
-        if len(self.current_session.state.symptoms) >= 1:
-            self.current_session.state.current_phase = ConsultationPhase.MEDICAL_HISTORY
-            return await self._generate_medical_history_prompt()
-        
-        # 继续收集症状
-        follow_up = intention.follow_up_question or "还有其他不舒服的地方吗？"
-        return follow_up
-    
-    async def _handle_medical_history_phase(
-        self, 
-        message: str, 
-        intention: IntentionResult
-    ) -> str:
-        """处理病史收集阶段"""
-        # 提取病史信息
-        history_info = self._extract_medical_history(message)
-        
-        if history_info:
-            # 更新病史
-            medical_history = self.current_session.state.medical_history
-            for key, value in history_info.items():
-                if hasattr(medical_history, key):
-                    current_value = getattr(medical_history, key)
-                    if isinstance(current_value, list) and value not in current_value:
-                        current_value.append(value)
-                    elif current_value is None:
-                        setattr(medical_history, key, value)
-        
-        # 询问是否需要上传附件
-        self.current_session.state.current_phase = ConsultationPhase.ATTACHMENTS
-        return (
-            "好的，已记录相关信息。\n\n请问您是否有以下资料需要上传？\n"
-            "1. 检查报告/化验单\n"
-            "2. 舌面照片\n"
-            "如有，请直接发送图片；如没有，请回复'无'继续。"
-        )
-    
-    async def _handle_attachments_phase(self, message: str) -> str:
-        """处理附件上传阶段"""
-        msg_lower = message.lower()
-        
-        if msg_lower in ["无", "没有", "没有图片", "不用上传"]:
-            self.current_session.state.current_phase = ConsultationPhase.SUPPLEMENTARY
-            return "好的。接下来请问您还有没有其他需要补充说明的情况？如没有，请回复'没有'。"
-        
-        # 检查是否是图片（这里简化处理，实际需要检查 message type）
-        if message.startswith("data:image") or message.endswith((".jpg", ".jpeg", ".png", ".webp")):
-            # 模拟图片处理
-            if "tongue" in msg_lower or "舌" in message:
-                self.current_session.state.tongue_image_url = message
-                self.current_session.state.physical_info.tongue_type = "待分析"
-                return "好的，已收到舌面照片，正在分析中..."
-            else:
-                self.current_session.state.exam_report_url = message
-                return "好的，已收到检查报告。"
-        
-        # 继续询问
-        self.current_session.state.current_phase = ConsultationPhase.SUPPLEMENTARY
-        return "请问还有其他需要补充说明的情况吗？如没有，请回复'没有'。"
-    
-    async def _handle_supplementary_phase(self, message: str) -> str:
-        """处理补充信息阶段"""
-        msg_lower = message.lower()
-        
-        if msg_lower in ["没有", "无", "不用", "没了"]:
-            # 进入诊断阶段
-            return await self._generate_diagnosis_and_record()
-        
-        # 记录补充信息
-        self.current_session.state.consultation_record = ConsultationRecord(
-            supplementary_info=message
-        )
-        
-        return await self._generate_diagnosis_and_record()
-    
-    async def _generate_diagnosis_and_record(self) -> str:
-        """生成诊断和结构化病历"""
-        self.current_session.state.current_phase = ConsultationPhase.COMPLETE
-        
-        # 生成诊断
-        diagnosis_response = await self.diagnosis_agent._generate_diagnosis_response()
-        
-        # 异步生成结构化病历
-        asyncio.create_task(self._generate_consultation_record())
-        
-        return diagnosis_response
-    
-    async def _generate_consultation_record(self) -> ConsultationRecord:
-        """生成结构化病历"""
-        state = self.current_session.state
-        patient_info = state.patient_info
-        
-        # 初始化 medical_history 如果为 None
-        medical_history = state.medical_history
-        if medical_history is None:
-            medical_history = MedicalHistory()
-        
-        record = ConsultationRecord(
-            # 会话信息
-            session_id=self.current_session.session_id,
-            visit_type=state.visit_type,
-            visit_date=datetime.now(),
-            
-            # 基本信息
-            patient_name=patient_info.name,
-            patient_age=patient_info.age,
-            patient_gender=get_enum_value(patient_info.gender) if patient_info.gender else None,
-            
-            # 主诉
-            chief_complaint=state.chief_complaint,
-            
-            # 病史
-            medical_history=medical_history,
-            
-            # 症状列表
-            symptoms=state.symptoms,
-            
-            # 体格检查
-            physical_exam=state.physical_info,
-            
-            # 舌脉信息
-            tongue_image_url=state.tongue_image_url,
-            tongue_image_analysis=state.tongue_image_url,  # 待分析
-            pulse_description=get_enum_value(state.physical_info.pulse_type[0]) if state.physical_info.pulse_type else None,
-            
-            # 辅助检查
-            exam_report_urls=[state.exam_report_url] if state.exam_report_url else [],
-            
-            # 辨证论治
-            diagnosis=get_enum_value(state.diagnosis.syndrome) if state.diagnosis else None,
-            syndrome=state.diagnosis.syndrome_description if state.diagnosis else None,
-            syndrome_differentiation=state.diagnosis.pathogenesis if state.diagnosis else None,
-            
-            # 治疗方案
-            treatment_principle=state.treatment_plan.principle if state.treatment_plan else None,
-            herbal_prescription=state.treatment_plan.herbal_prescription if state.treatment_plan else None,
-            lifestyle_advice=state.treatment_plan.lifestyle_advice if state.treatment_plan else [],
-            diet_advice=state.treatment_plan.diet_advice if state.treatment_plan else [],
-            precautions=state.treatment_plan.precautions if state.treatment_plan else [],
-            follow_up_advice=state.treatment_plan.follow_up_advice if state.treatment_plan else None,
-            
-            # 补充信息
-            supplementary_info=state.consultation_record.supplementary_info if state.consultation_record else None,
-            
-            # 元数据
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            metadata={
-                "session_id": self.current_session.session_id,
-                "turn_count": state.turn_count,
-                "phase": get_enum_value(state.current_phase),
-            }
-        )
-        
-        self.current_session.state.consultation_record = record
-        self.current_session.state.is_complete = True
-        self.current_session.status = SessionStatus.COMPLETED
-        
-        # 触发回调
-        if self._on_record_generated:
-            self._on_record_generated(record)
-        
-        logger.info(f"Consultation record generated: {record}")
-        return record
-    
-    async def _handle_consultation_complete(self) -> str:
-        """处理问诊完成后的用户输入"""
-        return "问诊已完成。如有其他问题，请重新开始咨询。"
-    
-    async def _generate_medical_history_prompt(self) -> str:
-        """生成病史询问提示"""
-        return (
-            "了解了您的症状。接下来我想了解一些病史信息：\n\n"
-            "1. 过敏史：您有没有对什么药物或食物过敏？\n"
-            "2. 既往史：您之前有没有患过什么疾病？\n"
-            "3. 家族史：您的直系亲属中有没有什么遗传病？\n"
-            "4. 婚育史：（如适用）您的婚姻和生育情况如何？\n"
-            "5. 个人史：您的工作环境、生活习惯等有什么特点？\n\n"
-            "请逐一告诉我，如没有请说明'无'。"
-        )
-    
-    def _extract_medical_history(self, message: str) -> Dict[str, Any]:
-        """从消息中提取病史信息（简化实现）"""
-        history = {}
-        msg_lower = message.lower()
-        
-        # 过敏史关键词
-        allergy_keywords = ["过敏", "过敏原", "过敏体质"]
-        if any(kw in msg_lower for kw in allergy_keywords):
-            history["allergies"] = [message]
-        
-        # 既往史关键词
-        past_keywords = ["既往", "以前", "之前有", "患过"]
-        if any(kw in msg_lower for kw in past_keywords):
-            history["past_history"] = [message]
-        
-        # 家族史关键词
-        family_keywords = ["家族", "遗传", "父亲", "母亲"]
-        if any(kw in msg_lower for kw in family_keywords):
-            history["family_history"] = [message]
-        
-        return history
-    
-    def _count_consultation_turns(self) -> int:
-        """计算问诊轮数"""
-        return self.current_session.state.turn_count
     
     def _get_intention_context(self) -> Dict[str, Any]:
         """获取意图识别的上下文"""
@@ -582,214 +278,548 @@ class TCMConsultationSystem:
             return {}
         
         state = self.current_session.state
+        recent_messages = self.current_session.messages[-6:]
+        
         return {
-            "conversation_phase": get_enum_value(state.current_phase),
-            "collected_symptoms": [s.name for s in state.symptoms],
-            "previous_intention": state.intention,
-            "patient_age": state.patient_info.age,
-            "patient_gender": get_enum_value(state.patient_info.gender) if state.patient_info.gender else None,
-            "turn_count": state.turn_count,
+            "session_id": state.session_id,
+            "phase": state.consultation_phase,
+            "current_intent": state.current_intent,
+            "collected_slots": [k for k, v in state.slot_status.items() if v.status == SlotStatus.COLLECTED],
+            "recent_messages": recent_messages,
         }
     
+    async def _route_by_intention(
+        self,
+        intention: IntentionResult,
+        message: str
+    ) -> str:
+        """根据意图路由到不同的 Agent"""
+        category = get_enum_value(intention.category)
+        
+        if category == "general_medical":
+            # 普通医疗咨询 -> RAG 检索
+            return await self._handle_general_consultation(message)
+        
+        elif category == "consultation":
+            # 医疗问诊 -> 多轮问答收集信息
+            return await self._handle_medical_consultation(message, intention)
+        
+        elif category == "other":
+            # 其他问题 -> 其他 Agent 处理
+            return await self._handle_other_question(message)
+        
+        else:
+            # 未知意图 -> 引导进入问诊或普通咨询
+            return "抱歉，我无法理解您的问题。您可以：\n1. 描述您的健康问题，我会为您问诊\n2. 咨询一般的中医健康知识"
+    
+    async def _handle_general_consultation(self, message: str) -> str:
+        """
+        处理普通咨询（接入 RAG）
+        """
+        # RAG 检索
+        kb_results = self.knowledge_base.search_similar(message, max_results=5)
+        
+        # 构建参考信息
+        context = ""
+        if kb_results:
+            context = "【参考信息】\n"
+            for i, result in enumerate(kb_results, 1):
+                content = result.get('content', '')[:500]
+                context += f"{i}. {content}\n\n"
+        
+        # 构建提示
+        prompt = f"用户问题：{message}\n\n{context}\n请根据以上信息回答用户的问题。"
+        
+        # 调用 Agent
+        result = await self.general_consultation_agent.run(prompt)
+        
+        response = result.content
+        
+        # 添加就医建议
+        response += f"\n\n💡 如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
+        
+        return response
+    
+    async def _handle_medical_consultation(
+        self,
+        message: str,
+        intention: IntentionResult
+    ) -> str:
+        """
+        处理医疗问诊（多轮问答收集信息）
+        """
+        state = self.current_session.state
+        
+        # 欢迎阶段
+        if state.consultation_phase == ConsultationPhase.WELCOME:
+            return await self._handle_welcome(message, intention)
+        
+        # 问诊阶段
+        elif state.consultation_phase == ConsultationPhase.CONSULTATION:
+            return await self._handle_consultation_phase(message, intention)
+        
+        # 补充信息阶段
+        elif state.consultation_phase == ConsultationPhase.SUPPLEMENTARY:
+            return await self._handle_supplementary_phase(message)
+        
+        # 完成阶段
+        elif state.consultation_phase == ConsultationPhase.COMPLETE:
+            return await self._handle_complete_phase()
+        
+        return "系统状态异常"
+    
+    async def _handle_welcome(self, message: str, intention: IntentionResult) -> str:
+        """欢迎阶段 - 初始化问诊"""
+        state = self.current_session.state
+        visit_type = state.visit_type
+        visit_type_text = "复诊" if visit_type == ConsultationVisitType.FOLLOW_UP_VISIT else "初诊"
+        
+        # 初始化槽位状态
+        state.pending_slots = []
+        for slot_def in CONSULTATION_SLOTS_DEFINITION:
+            key = slot_def["key"]
+            is_required = slot_def["required"]
+            state.slot_status[key] = SlotCollectionStatus(
+                key=key,
+                status=SlotStatus.PENDING if is_required else SlotStatus.SKIPPED
+            )
+            if is_required:
+                state.pending_slots.append(key)
+        
+        state.current_slot_key = None
+        
+        # 初始化患者信息
+        state.patient_info = PatientInfo()
+        
+        # 进入问诊阶段
+        state.consultation_phase = ConsultationPhase.CONSULTATION
+        
+        # 欢迎消息
+        welcome = f"您好！欢迎来到中医智能问诊系统。我是您的中医健康助手。"
+        
+        if visit_type_text == "复诊":
+            welcome += " 您是复诊患者，请问您这次有什么需要咨询的呢？"
+            # 复诊跳过基本信息，直接问主诉
+            state.pending_slots = [s for s in state.pending_slots if s not in ["gender", "age"]]
+        else:
+            welcome += " 我了解到您是初次就诊。为了更好地为您服务，我需要了解一些信息。"
+        
+        return welcome
+    
+    async def _handle_consultation_phase(
+        self,
+        message: str,
+        intention: IntentionResult
+    ) -> str:
+        """问诊阶段 - 收集槽位信息"""
+        state = self.current_session.state
+        msg_lower = message.lower()
+        
+        # 检查是否要结束问诊
+        if self._should_end_consultation(msg_lower, message):
+            return await self._finish_consultation()
+        
+        # 从当前消息中提取槽位信息
+        self._extract_slots_from_message(message, intention)
+        
+        # 获取下一个待询问的槽位
+        next_slot_key = self._get_next_pending_slot()
+        
+        if next_slot_key:
+            # 还有待收集的槽位
+            state.current_slot_key = next_slot_key
+            slot_def = get_slot_by_key(next_slot_key)
+            if slot_def:
+                return slot_def["question"]
+        
+        # 必需槽位已收集，询问补充信息
+        required_done = all(
+            state.slot_status.get(k, SlotCollectionStatus(key=k)).status == SlotStatus.COLLECTED
+            for k in REQUIRED_SLOTS if k in state.slot_status
+        )
+        
+        if required_done:
+            # 询问补充信息
+            state.consultation_phase = ConsultationPhase.SUPPLEMENTARY
+            return "好的，基本信息已收集。请问您还有舌照、面照、检查报告需要上传吗？或者有其他需要补充说明的情况？"
+        
+        # 继续问下一个槽位
+        next_slot_key = self._get_next_pending_slot()
+        if next_slot_key:
+            slot_def = get_slot_by_key(next_slot_key)
+            if slot_def:
+                return slot_def["question"]
+        
+        # 所有槽位收集完成
+        return await self._finish_consultation()
+    
+    async def _handle_supplementary_phase(self, message: str) -> str:
+        """补充信息阶段"""
+        state = self.current_session.state
+        msg_lower = message.lower()
+        
+        # 保存补充信息
+        if message and msg_lower not in ["无", "没有", "没了", "没有了"]:
+            state.supplementary_info = message
+        
+        # 结束问诊
+        return await self._finish_consultation()
+    
+    async def _handle_complete_phase(self) -> str:
+        """完成阶段"""
+        return "问诊已完成，请查看上方诊断结果。"
+    
+    async def _finish_consultation(self) -> str:
+        """结束问诊，生成诊断"""
+        state = self.current_session.state
+        state.consultation_phase = ConsultationPhase.COMPLETE
+        
+        # 生成诊断
+        diagnosis_response = await self._generate_diagnosis()
+        
+        # 异步生成结构化病历
+        asyncio.create_task(self._generate_consultation_record())
+        
+        return diagnosis_response
+    
+    def _should_end_consultation(self, msg_lower: str, message: str) -> bool:
+        """判断是否要结束问诊"""
+        end_keywords = ["没有了", "没别的", "就这些", "暂时没", "就这些了", "可以了", "结束", "诊断", "结论"]
+        
+        if any(kw in msg_lower for kw in end_keywords):
+            return True
+        
+        # 多次回复"没有"也可能结束
+        if msg_lower in ["没", "无", "没有", "没有其他", "没了"]:
+            no_count = getattr(self.current_session.state, '_no_response_count', 0) + 1
+            self.current_session.state._no_response_count = no_count
+            if no_count >= 2:
+                self.current_session.state._no_response_count = 0
+                return True
+        
+        return False
+    
+    def _extract_slots_from_message(
+        self,
+        message: str,
+        intention: IntentionResult
+    ) -> None:
+        """从消息中提取槽位信息"""
+        state = self.current_session.state
+        msg_lower = message.lower()
+        entities = intention.entities
+        
+        # ========== 基本信息 ==========
+        # 性别
+        if state.slot_status.get("gender", SlotCollectionStatus(key="gender")).status != SlotStatus.COLLECTED:
+            gender = None
+            if "gender" in entities:
+                gender = entities["gender"]
+            elif any(k in msg_lower for k in ["男", "先生", "男性"]):
+                gender = "男"
+            elif any(k in msg_lower for k in ["女", "女士", "女性"]):
+                gender = "女"
+            
+            if gender:
+                state.slot_status["gender"].status = SlotStatus.COLLECTED
+                state.slot_status["gender"].value = gender
+                state.patient_info.gender = gender
+                state.pending_slots = [s for s in state.pending_slots if s != "gender"]
+        
+        # 年龄
+        if state.slot_status.get("age", SlotCollectionStatus(key="age")).status != SlotStatus.COLLECTED:
+            age = entities.get("age")
+            if not age:
+                age_match = re.search(r'(\d+)\s*(岁|周岁)', message)
+                if age_match:
+                    age = age_match.group(1)
+            
+            if age:
+                state.slot_status["age"].status = SlotStatus.COLLECTED
+                state.slot_status["age"].value = age
+                state.patient_info.age = age
+                state.pending_slots = [s for s in state.pending_slots if s != "age"]
+        
+        # ========== 主诉 ==========
+        if state.slot_status.get("chief_complaint", SlotCollectionStatus(key="chief_complaint")).status != SlotStatus.COLLECTED:
+            symptoms = entities.get("symptom", []) or entities.get("symptom_list", [])
+            if symptoms:
+                chief = ", ".join(symptoms) if isinstance(symptoms, list) else symptoms
+                state.slot_status["chief_complaint"].status = SlotStatus.COLLECTED
+                state.slot_status["chief_complaint"].value = chief
+                state.chief_complaint = chief
+                state.pending_slots = [s for s in state.pending_slots if s != "chief_complaint"]
+                
+                # 同时记录症状列表
+                for symptom_name in (symptoms if isinstance(symptoms, list) else [symptoms]):
+                    symptom = SymptomInfo(name=symptom_name)
+                    if symptom.name not in [s.name for s in state.symptoms]:
+                        state.symptoms.append(symptom)
+        
+        # ========== 症状详情 ==========
+        if state.slot_status.get("symptom_detail", SlotCollectionStatus(key="symptom_detail")).status != SlotStatus.COLLECTED:
+            duration = entities.get("duration")
+            location = entities.get("location")
+            severity = entities.get("severity")
+            
+            detail_info = []
+            if duration:
+                detail_info.append(f"持续时间：{duration}")
+            if location:
+                detail_info.append(f"部位：{location}")
+            if severity:
+                detail_info.append(f"程度：{severity}")
+            
+            if detail_info or len(message) > 10:
+                state.slot_status["symptom_detail"].status = SlotStatus.COLLECTED
+                state.slot_status["symptom_detail"].value = message
+                state.slot_status["symptom_detail"].raw_content = message
+                state.pending_slots = [s for s in state.pending_slots if s != "symptom_detail"]
+                
+                # 更新症状详情
+                if state.symptoms and detail_info:
+                    state.symptoms[-1].duration = duration
+                    state.symptoms[-1].location = location
+                    state.symptoms[-1].severity = severity
+        
+        # ========== 既往史 ==========
+        if state.slot_status.get("past_history", SlotCollectionStatus(key="past_history")).status != SlotStatus.COLLECTED:
+            if any(k in msg_lower for k in ["既往", "之前", "以前", "病史"]):
+                state.slot_status["past_history"].status = SlotStatus.COLLECTED
+                state.slot_status["past_history"].value = message
+                state.past_history = message
+                state.pending_slots = [s for s in state.pending_slots if s != "past_history"]
+        
+        # ========== 过敏史 ==========
+        if state.slot_status.get("allergy", SlotCollectionStatus(key="allergy")).status != SlotStatus.COLLECTED:
+            if any(k in msg_lower for k in ["过敏"]):
+                state.slot_status["allergy"].status = SlotStatus.COLLECTED
+                state.slot_status["allergy"].value = message
+                state.allergy_info.has_allergy = True
+                state.allergy_info.allergen = message
+                state.pending_slots = [s for s in state.pending_slots if s != "allergy"]
+            elif any(k in msg_lower for k in ["没有过敏", "不过敏", "无过敏"]):
+                state.slot_status["allergy"].status = SlotStatus.COLLECTED
+                state.slot_status["allergy"].value = "无"
+                state.pending_slots = [s for s in state.pending_slots if s != "allergy"]
+        
+        # ========== 婚育史 ==========
+        if state.slot_status.get("marriage_history", SlotCollectionStatus(key="marriage_history")).status != SlotStatus.COLLECTED:
+            if any(k in msg_lower for k in ["婚", "育", "生", "孩"]):
+                state.slot_status["marriage_history"].status = SlotStatus.COLLECTED
+                state.slot_status["marriage_history"].value = message
+                state.marriage_history = message
+                state.pending_slots = [s for s in state.pending_slots if s != "marriage_history"]
+        
+        # ========== 个人史 ==========
+        if state.slot_status.get("personal_history", SlotCollectionStatus(key="personal_history")).status != SlotStatus.COLLECTED:
+            if any(k in msg_lower for k in ["抽烟", "吸烟", "喝酒", "饮酒", "生活习惯"]):
+                state.slot_status["personal_history"].status = SlotStatus.COLLECTED
+                state.slot_status["personal_history"].value = message
+                state.personal_history = message
+                state.pending_slots = [s for s in state.pending_slots if s != "personal_history"]
+        
+        # ========== 家族史 ==========
+        if state.slot_status.get("family_history", SlotCollectionStatus(key="family_history")).status != SlotStatus.COLLECTED:
+            if any(k in msg_lower for k in ["家族", "遗传", "父母", "爸妈"]):
+                state.slot_status["family_history"].status = SlotStatus.COLLECTED
+                state.slot_status["family_history"].value = message
+                state.family_history = message
+                state.pending_slots = [s for s in state.pending_slots if s != "family_history"]
+        
+        # ========== 舌照 ==========
+        if state.slot_status.get("tongue", SlotCollectionStatus(key="tongue")).status != SlotStatus.COLLECTED:
+            if message.startswith("data:image") or any(ext in message.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                if "tongue" in msg_lower or "舌" in message:
+                    state.slot_status["tongue"].status = SlotStatus.COLLECTED
+                    state.slot_status["tongue"].value = "已上传"
+                    state.tongue_image_url = message
+                    state.pending_slots = [s for s in state.pending_slots if s != "tongue"]
+        
+        # ========== 面照 ==========
+        if state.slot_status.get("face", SlotCollectionStatus(key="face")).status != SlotStatus.COLLECTED:
+            if message.startswith("data:image") or any(ext in message.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                if "face" in msg_lower or "面" in msg_lower:
+                    state.slot_status["face"].status = SlotStatus.COLLECTED
+                    state.slot_status["face"].value = "已上传"
+                    state.face_image_url = message
+                    state.pending_slots = [s for s in state.pending_slots if s != "face"]
+        
+        # ========== 检查报告 ==========
+        if state.slot_status.get("exam_report", SlotCollectionStatus(key="exam_report")).status != SlotStatus.COLLECTED:
+            if message.startswith("data:image") or any(ext in message.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]):
+                state.slot_status["exam_report"].status = SlotStatus.COLLECTED
+                state.slot_status["exam_report"].value = "已上传"
+                state.exam_report_url = message
+                state.pending_slots = [s for s in state.pending_slots if s != "exam_report"]
+    
+    def _get_next_pending_slot(self) -> Optional[str]:
+        """获取下一个待收集的槽位"""
+        state = self.current_session.state
+        
+        # 首先检查当前正在收集的槽位
+        if state.current_slot_key:
+            slot_status = state.slot_status.get(state.current_slot_key)
+            if slot_status and slot_status.status == SlotStatus.PENDING:
+                return state.current_slot_key
+        
+        # 遍历所有槽位定义
+        for slot_def in CONSULTATION_SLOTS_DEFINITION:
+            key = slot_def["key"]
+            slot_status = state.slot_status.get(key)
+            if slot_status and slot_status.status == SlotStatus.PENDING and key in state.pending_slots:
+                return key
+        
+        return None
+    
+    async def _handle_other_question(self, message: str) -> str:
+        """处理其他问题"""
+        # TODO 调用agent进行处理
+        return f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
+    
+    async def _generate_diagnosis(self) -> str:
+        """生成诊断结果"""
+        state = self.current_session.state
+        
+        # 构建诊断上下文
+        diagnosis_context = self._build_diagnosis_context()
+        
+        # 调用 Agent 生成诊断
+        prompt = f"""请根据以下问诊信息进行中医辨证论治：
+
+{diagnosis_context}
+
+请给出：
+1. 辨证分析
+2. 证型诊断
+3. 治法方药建议
+4. 养生调护建议
+
+请用专业、简洁的语言回复。"""
+        
+        result = await self.medical_consultation_agent.run(prompt)
+        
+        diagnosis_text = result.content
+        
+        # 保存诊断信息
+        state.diagnosis = DiagnosisInfo(
+            analysis=diagnosis_text,
+        )
+        
+        return diagnosis_text
+    
+    def _build_diagnosis_context(self) -> str:
+        """构建诊断上下文"""
+        state = self.current_session.state
+        
+        parts = []
+        
+        # 基本信息
+        if state.patient_info.gender:
+            parts.append(f"性别：{state.patient_info.gender}")
+        if state.patient_info.age:
+            parts.append(f"年龄：{state.patient_info.age}岁")
+        
+        # 主诉
+        if state.chief_complaint:
+            parts.append(f"主诉：{state.chief_complaint}")
+        
+        # 症状
+        if state.symptoms:
+            symptoms_text = "、".join([s.name for s in state.symptoms])
+            parts.append(f"症状：{symptoms_text}")
+        
+        # 现病史
+        if state.present_illness:
+            parts.append(f"现病史：{state.present_illness}")
+        
+        # 既往史
+        if state.past_history:
+            parts.append(f"既往史：{state.past_history}")
+        
+        # 过敏史
+        if state.allergy_info.has_allergy:
+            parts.append(f"过敏史：{state.allergy_info.allergen}（{state.allergy_info.reaction}）")
+        else:
+            parts.append("过敏史：无")
+        
+        # 舌照分析
+        if state.tongue_analysis:
+            parts.append(f"舌象：{state.tongue_analysis}")
+        
+        # 补充信息
+        if state.supplementary_info:
+            parts.append(f"补充：{state.supplementary_info}")
+        
+        return "\n".join(parts)
+    
+    async def _generate_consultation_record(self) -> ConsultationRecord:
+        """生成结构化病历"""
+        state = self.current_session.state
+        
+        try:
+            record = ConsultationRecord(
+                session_id=state.session_id,
+                visit_type=state.visit_type,
+                visit_date=datetime.now(),
+                
+                patient_name=state.patient_info.name,
+                patient_age=state.patient_info.age,
+                patient_gender=state.patient_info.gender,
+                
+                chief_complaint=state.chief_complaint,
+                
+                past_history=state.past_history,
+                personal_history=state.personal_history,
+                family_history=state.family_history,
+                marriage_history=state.marriage_history,
+                
+                allergy_info=state.allergy_info if state.allergy_info.has_allergy else AllergyInfo(),
+                
+                symptoms=state.symptoms,
+                
+                physical_exam=PhysicalInfo(),
+                
+                tongue_image_url=state.tongue_image_url,
+                tongue_image_analysis=state.tongue_analysis,
+                face_image_url=state.face_image_url,
+                face_image_analysis=state.face_analysis,
+                
+                exam_report_url=state.exam_report_url,
+                exam_report_summary=state.exam_report_summary,
+                
+                supplementary_info=state.supplementary_info,
+                
+                diagnosis=state.diagnosis,
+                treatment_plan=state.treatment_plan,
+            )
+            
+            state.consultation_record = record
+            logger.info(f"Consultation record generated: {state.session_id}")
+            
+            return record
+            
+        except Exception as e:
+            logger.error(f"Error generating consultation record: {e}")
+            raise
+    
     async def _handle_interrupt(
-        self, 
+        self,
         reason: ConsultationInterruptReason,
         error: Optional[str] = None
     ) -> str:
-        """处理中断场景"""
-        self.current_session.status = SessionStatus.INTERRUPTED
-        self.current_session.interrupt_reason = reason
-        self.current_session.updated_at = datetime.now()
+        """处理中断"""
+        state = self.current_session.state
+        state.is_complete = True
         
-        if error:
-            logger.error(f"Consultation interrupted: {reason.value}, error: {error}")
+        if reason == ConsultationInterruptReason.MAX_TURNS_EXCEEDED:
+            return "问诊轮数已达到上限，请重新开始或联系人工客服。"
         
-        message = self.ENDING_MESSAGES.get(reason, "")
-        message = message.format(max_turns=self.max_turns)
+        elif reason == ConsultationInterruptReason.PATIENT_QUIT:
+            return "您已结束问诊，感谢您的使用！"
         
-        # 如果是异常错误，生成最终病历
-        if reason == ConsultationInterruptReason.ABNORMAL_ERROR:
-            await self._generate_consultation_record()
+        elif reason == ConsultationInterruptReason.ABNORMAL_ERROR:
+            logger.error(f"Consultation interrupted: {error}")
+            return f"问诊过程中出现错误：{error}\n\n请重新开始问诊。"
         
-        return message
-    
-    async def chat_stream(self, message: str) -> AsyncIterator[str]:
-        """流式处理消息"""
-        if not self.current_session:
-            await self.start_session()
-        
-        self.current_session.messages.append({
-            "role": "user",
-            "content": message,
-            "timestamp": datetime.now().isoformat(),
-        })
-        
-        full_response = ""
-        async for chunk in self.diagnosis_agent.run_stream(message):
-            full_response += chunk
-            yield chunk
-        
-        self.current_session.state = self.diagnosis_agent.get_state()
-        self.current_session.messages.append({
-            "role": "assistant",
-            "content": full_response,
-            "timestamp": datetime.now().isoformat(),
-        })
-        self.current_session.updated_at = datetime.now()
-    
-    def chat_sync(self, message: str) -> str:
-        """同步版本"""
-        return asyncio.run(self.chat(message))
-    
-    async def end_session(self) -> Dict[str, Any]:
-        """结束当前会话"""
-        if not self.current_session:
-            return {"error": "No active session"}
-        
-        self.current_session.status = SessionStatus.COMPLETED
-        self.current_session.interrupt_reason = ConsultationInterruptReason.PATIENT_QUIT
-        self.current_session.updated_at = datetime.now()
-        
-        summary = self.get_session_summary(self.current_session.session_id)
-        
-        self.current_session = None
-        
-        return summary
-    
-    def get_session_summary(self, session_id: str) -> Dict[str, Any]:
-        """获取会话摘要"""
-        session = self.sessions.get(session_id)
-        if not session:
-            return {"error": "Session not found"}
-        
-        state = session.state
-        
-        summary = {
-            "session_id": session_id,
-            "status": session.status.value,
-            "interrupt_reason": session.interrupt_reason.value if session.interrupt_reason else None,
-            "created_at": session.created_at.isoformat(),
-            "updated_at": session.updated_at.isoformat(),
-            "turns": len(session.messages),
-            "consultation_turns": state.turn_count,
-            "phase": get_enum_value(state.current_phase),
-            "symptoms": [s.name for s in state.symptoms],
-            "has_diagnosis": state.diagnosis is not None,
-            "has_treatment": state.treatment_plan is not None,
-            "has_record": state.consultation_record is not None,
-        }
-        
-        if state.patient_info.age:
-            summary["patient_age"] = state.patient_info.age
-        if state.patient_info.gender:
-            summary["patient_gender"] = get_enum_value(state.patient_info.gender)
-        
-        if state.consultation_record:
-            summary["consultation_record"] = state.consultation_record.model_dump()
-        
-        return summary
-    
-    def get_consultation_record(self, session_id: Optional[str] = None) -> Optional[ConsultationRecord]:
-        """获取结构化病历"""
-        if session_id:
-            session = self.sessions.get(session_id)
-            return session.state.consultation_record if session else None
-        return self.current_session.state.consultation_record if self.current_session else None
-    
-    async def query_knowledge(
-        self,
-        query: str,
-        entity_type: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """查询知识库"""
-        results = self.knowledge_base.search_similar(
-            query,
-            entity_types=[entity_type] if entity_type else None,
-            max_results=5
-        )
-        return results
-    
-    def get_session(self, session_id: str) -> Optional[ConsultationSession]:
-        """获取会话"""
-        return self.sessions.get(session_id)
-    
-    def list_sessions(self) -> List[str]:
-        """列出所有会话ID"""
-        return list(self.sessions.keys())
-
-
-async def create_cli_session():
-    """创建命令行会话"""
-    system = TCMConsultationSystem()
-    
-    print("=" * 60)
-    print("欢迎使用中医智能问诊系统")
-    print("=" * 60)
-    print("输入您的问题，系统将进行中医辨证分析")
-    print("输入 'quit' 或 '退出' 结束问诊")
-    print("输入 'reset' 重新开始")
-    print("输入 'summary' 查看当前问诊摘要")
-    print("=" * 60)
-    print()
-    
-    await system.start_session()
-    
-    print("助手: " + system.diagnosis_agent.WELCOME_MESSAGE)
-    
-    while True:
-        try:
-            user_input = input("您: ").strip()
-            
-            if not user_input:
-                continue
-            
-            if user_input.lower() in ["quit", "退出", "exit", "q"]:
-                summary = await system.end_session()
-                print("\n问诊摘要:")
-                print(f"- 对话轮次: {summary.get('turns', 0)}")
-                if summary.get("consultation_record"):
-                    record = summary["consultation_record"]
-                    print(f"- 主诉: {record.get('chief_complaint', 'N/A')}")
-                    print(f"- 症状: {', '.join(record.get('symptoms', []))}")
-                print("\n感谢您的咨询，祝您健康！")
-                break
-            
-            if user_input.lower() in ["reset", "重置"]:
-                await system.start_session()
-                print("\n[已重置问诊]")
-                print("助手: " + system.diagnosis_agent.WELCOME_MESSAGE)
-                continue
-            
-            if user_input.lower() == "summary":
-                if system.current_session:
-                    summary = system.get_session_summary(system.current_session.session_id)
-                    print("\n当前问诊摘要:")
-                    print(f"- 阶段: {summary.get('phase')}")
-                    print(f"- 问诊轮数: {summary.get('consultation_turns', 0)}")
-                    print(f"- 已收集症状: {', '.join(summary.get('symptoms', []))}")
-                    if summary.get("consultation_record"):
-                        print(f"- 病历已生成")
-                continue
-            
-            response = await system.chat(user_input)
-            if response:
-                print(f"\n助手: {response}")
-            print()
-            
-        except KeyboardInterrupt:
-            print("\n\n问诊已中断，再见！")
-            break
-        except Exception as e:
-            print(f"\n发生错误: {e}")
-            continue
-    
-    return system
-
-
-def main():
-    """主入口"""
-    asyncio.run(create_cli_session())
-
-
-if __name__ == "__main__":
-    main()
+        return "问诊已结束。"

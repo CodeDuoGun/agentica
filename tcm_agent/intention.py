@@ -63,7 +63,7 @@ class IntentionRecognitionAgent:
 - 要求诊断：如"帮我看看是什么问题"
 → 处理方式：进入问诊流程
 
-### 3. non_medical（非医疗咨询）
+### 3. other（其他问题）
 - 完全无关话题：如天气、股票、新闻、游戏等
 - 政治敏感话题
 - 纯粹闲聊无医疗诉求
@@ -79,20 +79,17 @@ class IntentionRecognitionAgent:
 ## 输出要求：
 返回JSON格式的意图识别结果：
 {
-    "category": "general_medical" | "consultation" | "non_medical",
+    "category": "general_medical" | "consultation" | "other",
     "intention": "具体意图描述",
     "confidence": 0.0-1.0,
     "entities": {提取的实体信息},
     "follow_up_question": "追问问题（如需要）",
-    "suggested_response": "建议回复",
     "should_forward_to_consultation": true | false,
-    "hospital_referral": "推荐挂号地址（如适用）"
 }
 
 重要：
 - 非医疗咨询的回复内容应为null
-- 需要推荐挂号时，hospital_referral填写"线上中医问诊"
-- 置信度低于0.5时，优先判断为non_medical
+- 置信度低于0.5时，优先判断为other
 """
     
     def __init__(
@@ -166,58 +163,6 @@ class IntentionRecognitionAgent:
                 return loop.run_until_complete(self.recognize(user_input, context))
         except RuntimeError:
             return asyncio.run(self.recognize(user_input, context))
-
-
-class VisitTypeRecognitionAgent:
-    """
-    就诊类型识别 Agent
-    
-    识别用户是初诊还是复诊
-    """
-    
-    SYSTEM_PROMPT = """你是一个专业的中医问诊助手。你的任务是识别患者是初诊还是复诊。
-
-## 判断标准：
-
-### 初诊（first_visit）：
-- 首次到该医生/该医院就诊
-- 之前没有进行过类似的中医咨询
-- 描述中没有提及"之前看过"、"上次医生说"等
-
-### 复诊（follow_up_visit）：
-- 之前已经进行过中医问诊
-- 提及"之前"、"上次"、"继续之前的话题"
-- 正在服用药物，想反馈效果
-- 想继续之前未完成的治疗
-
-## 输出要求：
-返回JSON格式：
-{
-    "visit_type": "first_visit" | "follow_up_visit",
-    "confidence": 0.0-1.0,
-    "reason": "判断理由"
-}
-"""
-    
-    def __init__(
-        self,
-        model: Optional[Any] = None,
-        temperature: float = 0.1
-    ):
-        self.model = model or QwenChat(id="qwen-plus", temperature=temperature)
-        self.agent = Agent(
-            model=self.model,
-            name="VisitTypeRecognitionAgent",
-            instructions=self.SYSTEM_PROMPT,
-            response_model=ConsultationVisitType,
-            add_history_to_messages=True,
-        )
-    
-    async def recognize(self, user_input: str) -> ConsultationVisitType:
-        """识别就诊类型"""
-        prompt = f"用户输入：{user_input}\n\n请判断是初诊还是复诊。"
-        result = await self.agent.run(prompt)
-        return result.content
 
 
 class BasicInfoExtractor:

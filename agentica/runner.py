@@ -20,6 +20,7 @@ Notes:
 import asyncio
 import json
 import queue
+import re
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -558,7 +559,7 @@ class Runner:
             **kwargs,
         ):
             run_response = response
-            logger.info(f"run_response 是个啥 {run_response}")
+            logger.info(f"run_response 是个啥 {run_response} {type(run_response.content)}")
 
         if agent.response_model is not None:
             if agent.structured_outputs:
