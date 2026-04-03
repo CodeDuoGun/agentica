@@ -532,32 +532,54 @@
         async function newSession() {
             try {
                 const visitType = document.getElementById('visitTypeSelect').value;
-                
+
+                // 👉 新增：获取患者信息
+                const name = document.getElementById('patientName')?.value || "";
+                const age = document.getElementById('patientAge')?.value || "";
+                const gender = document.getElementById('patientGender')?.value || "";
+
+                // 👉 新增：医生ID（可以写死或从登录态获取）
+                const doctorId = 1;
+
+                const requestBody = {
+                    visit_type: visitType,
+                    doctor_id: doctorId,
+                    patient_data: {
+                        name: name,
+                        age: age,
+                        gender: gender
+                    }
+                };
+
                 const response = await fetch('/api/sessions', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ visit_type: visitType })
+                    body: JSON.stringify(requestBody)
                 });
-                
+
                 if (!response.ok) throw new Error('创建会话失败');
-                
+
                 const data = await response.json();
                 currentSessionId = data.session_id;
-                
+
                 // 更新UI
-                document.getElementById('sessionId').textContent = `会话ID: ${currentSessionId.slice(0, 8)}...`;
+                document.getElementById('sessionId').textContent = 
+                    `会话ID: ${currentSessionId.slice(0, 8)}...`;
+
                 document.getElementById('messages').innerHTML = '';
-                document.getElementById('visitTypeInfo').textContent = `类型: ${visitType === 'first_visit' ? '初诊' : '复诊'}`;
-                
+
+                document.getElementById('visitTypeInfo').textContent = 
+                    `类型: ${visitType === 'first_visit' ? '初诊' : '复诊'}`;
+
                 // 隐藏欢迎提示
                 const emptyState = document.getElementById('emptyState');
                 if (emptyState) emptyState.style.display = 'none';
-                
+
                 // 添加欢迎消息
                 if (data.welcome_message) {
                     addMessage('assistant', data.welcome_message);
                 }
-                
+
             } catch (error) {
                 console.error('创建会话失败:', error);
                 alert('创建会话失败，请刷新页面重试');

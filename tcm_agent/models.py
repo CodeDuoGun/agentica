@@ -84,8 +84,6 @@ class PatientInfo(BaseModel):
     name: Optional[str] = Field(None, description="姓名")
     age: Optional[str] = Field(None, description="年龄")
     gender: Optional[str] = Field(None, description="性别")
-    occupation: Optional[str] = Field(None, description="职业")
-    contact: Optional[str] = Field(None, description="联系方式")
     
     class Config:
         use_enum_values = True
@@ -213,6 +211,7 @@ class ConsultationRecord(BaseModel):
     visit_date: datetime = Field(default_factory=datetime.now, description="就诊日期")
     
     # 基本信息
+    # TODO 姓名不重要
     patient_name: Optional[str] = Field(None, description="患者姓名")
     patient_age: Optional[str] = Field(None, description="患者年龄")
     patient_gender: Optional[str] = Field(None, description="患者性别")
@@ -371,40 +370,53 @@ class ConsultationState(BaseModel):
 
 # 问诊槽位定义列表
 CONSULTATION_SLOTS_DEFINITION = [
+    # 就诊类型
+    {"key": "visit_type", "required": True, "group": "basis"},
     # 基本信息
-    {"key": "gender", "question": "请问您的性别是？", "required": True, "group": "basic"},
-    {"key": "age", "question": "请问您的年龄是？", "required": True, "group": "basic"},
+    {"key": "gender", "required": True, "group": "basic"},
+    {"key": "age",  "required": True, "group": "basic"},
     
     # 主诉
-    {"key": "chief_complaint", "question": "您今天主要哪里不舒服？", "required": True, "group": "chief_complaint"},
-    {"key": "symptom_detail", "question": "能详细描述一下症状吗？比如什么时候开始的，什么感觉？", "required": False, "group": "chief_complaint"},
+    {"key": "chief_complaint", "required": True, "group": "chief_complaint"},
+    
+    # 症状（结构化）
+    {
+        "key": "symptoms",
+        "required": True,
+        "group": "symptom",
+        "type": "list_object",  
+        "schema": "SymptomInfo"
+    },
     
     # 既往史
-    {"key": "past_history", "question": "之前有过类似的情况吗？或有什么既往病史？", "required": False, "group": "past"},
+    {"key": "past_history","required": True, "group": "past"},
     
     # 过敏史
-    {"key": "allergy", "question": "您有没有什么过敏的东西？", "required": False, "group": "allergy"},
+    {"key": "allergy",  "required": True, "group": "allergy"},
     
     # 婚育史
-    {"key": "marriage", "question": "请问您的婚育情况是怎样的？", "required": False, "group": "marriage"},
+    {"key": "marriage",  "required": True, "group": "marriage"},
     
     # 个人史
-    {"key": "personal", "question": "您平时有什么生活习惯吗？比如抽烟、喝酒？", "required": False, "group": "personal"},
+    {"key": "personal","required": True, "group": "personal"},
     
     # 家族史
-    {"key": "family", "question": "您的家人有没有什么遗传病或类似病史？", "required": False, "group": "family"},
+    {"key": "family",  "required": True, "group": "family"},
     
     # 舌照
-    {"key": "tongue", "question": "可以上传一张舌面的照片吗？", "required": False, "group": "tongue"},
+    {"key": "tongue", "required": False, "group": "tongue"},
+    {"key": "tongue_analysis", "required": False, "group": "tongue"},
     
     # 面照
-    {"key": "face", "question": "可以上传一张面部照片吗？", "required": False, "group": "face"},
+    {"key": "face", "required": False, "group": "face"},
+    {"key": "face_analysis", "required": False, "group": "face"},
     
     # 检查报告
-    {"key": "exam_report", "question": "您有相关的检查报告吗？", "required": False, "group": "exam"},
+    {"key": "exam_report", "required": False, "group": "exam"},
+    {"key": "exam_analysis", "required": False, "group": "exam"},
     
     # 补充信息
-    {"key": "supplementary", "question": "还有其他需要补充说明的情况吗？", "required": False, "group": "supplementary"},
+    {"key": "supplementary",  "required": False, "group": "supplementary"},
 ]
 
 # 必需槽位
@@ -447,6 +459,57 @@ class KGQueryResult(BaseModel):
     context: str = Field(..., description="检索到的上下文")
     source: str = Field("knowledge_graph", description="来源")
     relevance_score: float = Field(0.0, description="相关度评分")
+
+
+class SlotUpdate(BaseModel):
+    """槽位更新"""
+    field: str = Field(..., description="字段名（必须来自病历结构）")
+    value: Any = Field(..., description="字段值")
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+class ConsultationControl(BaseModel):
+    """对话控制"""
+    next_action: str = Field(
+        ...,
+        description="next_question / ask_image / finish / clarify"
+    )
+    target_slot: Optional[str] = Field(None, description="当前要采集的槽位")
+    priority: Optional[int] = Field(1, description="优先级")
+
+
+class ConsultationTurnResult(BaseModel):
+    """多轮问诊结果（核心）"""
+    slot_updates: List[SlotUpdate] = Field(
+        default_factory=list,
+        description="本轮提取并更新的槽位"
+    )
+
+    # 📊 当前完整结构（可选，用于强同步）
+    structured_data: Optional[ConsultationRecord] = Field(
+        None,
+        description="病历结构"
+    )
+
+    # 💬 对话输出
+    reply: str = Field(..., description="下一句对用户说的话")
+
+    # 🎯 控制流
+    control: ConsultationControl = Field(...)
+
+    # 🖼️ 多模态（图片）
+    image_request: Optional[str] = Field(
+        None,
+        description="tongue / face / report"
+    )
+
+    # 🏁 是否结束
+    is_finished: bool = Field(False)
+
+    # ⚠️ 风险提示（医疗安全）
+    risk_alert: Optional[str] = Field(None)
+
+    class Config:
+        use_enum_values = True
 
 
 def get_enum_value(enum_or_str: Any) -> str:
