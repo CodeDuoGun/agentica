@@ -442,7 +442,7 @@ class TCMConsultationSystem:
         if self._should_end_consultation(message.lower(), message):
             return await self._finish_consultation()
 
-        # 2️⃣ 构造当前上下文（槽位 + 历史）
+        # 2️⃣ 构造当前上下文（槽位 + 历史）, 补充问诊槽位
         slot_state = {
             k: v.value if hasattr(v, "value") else str(v)
             for k, v in state.collected_slots.items()
@@ -478,12 +478,12 @@ class TCMConsultationSystem:
 
         # 遍历new_slots 更新槽位信息 
         new_slots = llm_result.get("slot_updates", {})
-        reply = llm_result.get("reply", "")
 
         for k, v in new_slots.items():
             if k in state.slot_status:
                 state.collected_slots[k] = v
                 state.slot_status[k].status = SlotStatus.COLLECTED
+        reply = llm_result.get("reply", "")
 
         # 7️⃣ 判断是否全部完成
         required_done = all(

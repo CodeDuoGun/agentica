@@ -80,3 +80,22 @@ python -m tcm_agent.main
   "is_finished": false,
   "risk_alert": null
 }
+ 
+
+result = ConsultationTurnResult.model_validate_json(llm_output)
+
+# 1️⃣ 更新槽位
+for slot in result.slot_updates:
+    if slot.field == "symptoms":
+        merge_symptoms(state.symptoms, slot.value)
+    else:
+        setattr(state, slot.field, slot.value)
+
+# 2️⃣ 控制流程
+if result.control.next_action == "ask_image":
+    return result.reply
+
+if result.is_finished:
+    return await self._finish_consultation()
+
+return result.reply
