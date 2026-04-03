@@ -14,7 +14,7 @@ Features:
 from tcm_agent.agent import TCMDiagnosisAgent
 from tcm_agent.knowledge import TCMKnowledgeBase 
 from tcm_agent.intention import IntentionRecognitionAgent, PatientInfoExtractor
-from tcm_agent.system import TCMConsultationSystem, ConsultationSession, SessionStatus
+from tcm_agent.service.consultation import TCMConsultationSystem, ConsultationSession, SessionStatus
 from tcm_agent.models import (
     SymptomInfo,
     DiagnosisInfo,

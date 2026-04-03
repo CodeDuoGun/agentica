@@ -82,7 +82,6 @@ class TCMDiagnosisAgent:
         conversation_model = QwenChat(id="qwen-plus")
         
         self.intention_agent = IntentionRecognitionAgent(model=intention_model, temperature=0.1)
-        # self.symptom_extractor = SymptomExtractor(model=symptom_model, temperature=0.1)
         self.patient_info_extractor = PatientInfoExtractor(model=patient_model, temperature=0.1)
         
         self.state = ConsultationState()

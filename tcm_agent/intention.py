@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from agentica import Agent, QwenChat 
 from agentica.model.message import UserMessage
 
-from tcm_agent.models import IntentionCategory, ConsultationVisitType, IntentionResult, PatientInfo, SymptomInfo
+from tcm_agent.models import IntentionResult, PatientInfo
 
 
 # 医疗相关关键词

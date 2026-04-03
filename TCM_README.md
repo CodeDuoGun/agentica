@@ -3,44 +3,80 @@
 TODO
 - [ ] print_response  修改为yield sse
 - [x] 接入知识图谱RAG检索, 处理医疗咨询问题、中医相关问题
-- [ ] Diagnosis agent, 目前回复内容过于冗余繁琐, 修改_build_system_prompt
+- [x] Diagnosis agent, 目前回复内容过于冗余繁琐, 修改_build_system_prompt
 - [ ] 修改状态问题槽位信息
 - [x] sessionid 
 - [ ] ConsultationRecord 结构化病历agent ，提示词
 - [x] VisitTypeRecognitionAgent 去掉
-- [ ] 打招呼语创建session后返回，无问题
-- [ ] 意图识别没代入上下文
-- [ ] 需要接入问诊agent， _handle_medical_consultation 修改入口
-- [ ] 会话历史入库， redis
+- [x] 打招呼语创建session后返回，无问题
+- [x] 意图识别没代入上下文
+- [x] 需要接入问诊agent， _handle_medical_consultation 修改入口
+- [ ] 增加诊断agent
+- [ ] 修改session Lock机制，会话历史入库， redis, 删除self._histories 逻辑
+- [ ] 让问诊大模型通过对话，。维持更新对话的槽位信息，并进行更新，这样估计会很慢。。。
+- [ ] 去掉无用的代码
+- [ ] 补充测试脚本，kg测试脚本
 
 
 
-tcm_agent/
-├── __init__.py           # 包入口，导出所有公共接口
-├── models.py             # 数据模型定义
-│                         # - IntentionType: 意图类型枚举
-│                         # - ConsultationPhase: 问诊阶段枚举
-│                         # - SyndromeType: 证型枚举
-│                         # - SymptomInfo/PatientInfo/DiagnosisInfo 等数据模型
-├── knowledge.py          # 知识图谱 + RAG 系统
-│                         # - TCMKnowledgeGraph: 知识图谱管理
-│                         # - TCMKnowledgeBase: 知识库（支持症状查询、治疗建议）
-├── intention.py          # 意图识别 Agent
-│                         # - IntentionRecognitionAgent: 意图识别
-│                         # - SymptomExtractor: 症状提取
-│                         # - PatientInfoExtractor: 患者信息提取
-├── agent.py              # 问诊 Agent
-│                         # - TCMDiagnosisAgent: 核心问诊逻辑
-├── system.py             # 主协调系统
-│                         # - TCMConsultationSystem: 统一入口
-│                         # - ConsultationSession: 会话管理
-├── examples/             # 使用示例
-│   ├── basic_usage.py    # 基础用法
-│   └── cli_demo.py       # 命令行演示
-├── tests/                # 测试代码
-│   ├── test_tcm_agent.py # 单元测试
-│   ├── test_agent_chat.py
-│   └── test_custom_prompt.py
-└── README.md             # 文档
+# run locally with conda
+1. 创建环境
+```bash
 
-python -m tcm_agent.web.run
+conda create -n tcmagent python=3.12
+conda activate tcmagent
+pip insall -r requirements.txt
+ 
+```
+2. 获取env 文件，咨询 @tangxueduo
+
+3. 启动脚本
+```bash
+python -m tcm_agent.main
+```
+
+
+多轮对话示例
+{
+  "slot_updates": [
+    {
+      "field": "chief_complaint",
+      "value": "头痛伴发热两天",
+      "confidence": 0.93
+    },
+    {
+      "field": "symptoms",
+      "value": [
+        {
+          "name": "头痛",
+          "duration": "2天",
+          "severity": "中",
+          "location": "头部",
+          "description": "持续性疼痛",
+          "trigger": "夜间加重",
+          "relief": null
+        },
+        {
+          "name": "发热",
+          "duration": "2天",
+          "severity": "轻",
+          "location": null,
+          "description": "低热",
+          "trigger": "夜间加重",
+          "relief": null
+        }
+      ],
+      "confidence": 0.91
+    }
+  ],
+  "structured_data": null,
+  "reply": "头痛是胀痛还是刺痛呢，发热大概多少度，有测量过吗",
+  "control": {
+    "next_action": "next_question",
+    "target_slot": "symptoms.description",
+    "priority": 1
+  },
+  "image_request": null,
+  "is_finished": false,
+  "risk_alert": null
+}
