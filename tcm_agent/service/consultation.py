@@ -18,6 +18,7 @@ from datetime import datetime
 from enum import Enum
 
 from agentica import Agent, QwenChat
+from agentica.run_response import RunResponse
 
 from tcm_agent.models import (
     ConsultationState,
@@ -38,6 +39,7 @@ from tcm_agent.models import (
     PatientInfo,
     CONSULTATION_SLOTS_DEFINITION,
     REQUIRED_SLOTS,
+    ConsultationControl,
     get_enum_value,
     get_slot_by_key,
     get_next_slot,
@@ -127,13 +129,13 @@ class TCMConsultationSystem:
         # 医疗问诊 Agent
         self._init_medical_consultation_agent()
         
-        # TODO 增加一个诊断和建议开方agent
         self._init_diagnosis_agent()
     
     def _init_diagnosis_agent(self):
-        """初始化问诊agent， 给出诊断结果和和建议处方"""
+        """初始化问诊agent， 给出诊断结果和建议开方"""
         model = QwenChat(id="qwen-plus", temperature=0.1)
-        system_prompt = "" 
+        system_prompt = "你是中医诊断和建议开方专家，根据用户的问题，给出诊断结果和建议处方" 
+        # TODO 指定response_model=DiagnosisInfo
         self.diagnosis_agent = Agent(
             model=model,
             name="MedicalDiagnosisAgent",
@@ -233,8 +235,8 @@ class TCMConsultationSystem:
     
     async def chat(self, message: str, imgs: Optional[ChatImages]=None) -> str:
         """
-        处理用户消息的入口
-        
+        处理用户消息的入口（非流式）
+
         流程：
         1. 意图识别
         2. 根据意图路由
@@ -242,54 +244,123 @@ class TCMConsultationSystem:
         """
         if not self.current_session:
             return "会话未初始化"
-        
+
         state = self.current_session.state
-        
+
         # 检查轮数限制
         if state.turn_count >= state.max_turns:
             return await self._handle_interrupt(
                 ConsultationInterruptReason.MAX_TURNS_EXCEEDED
             )
         state.turn_count += 1
-        
+
         # 添加用户消息
         self.current_session.messages.append({
             "role": "user",
             "content": message,
             "timestamp": datetime.now().isoformat(),
         })
-        
+
         try:
             # ========== 步骤1：意图识别 ==========
             intention_result = await self.intention_agent.recognize(
                 message,
                 self._get_intention_context()
             )
-            
+
             logger.info(f"Intention recognized: {intention_result.category}")
             # 更新当前意图
             state.current_intent = intention_result.category
-            
+
             # ========== 步骤2：根据意图路由 ==========
             response = await self._route_by_intention(intention_result, message, imgs)
-            
+
         except Exception as e:
             logger.error(f"Error in chat: {traceback.format_exc()}")
             return await self._handle_interrupt(
                 ConsultationInterruptReason.ABNORMAL_ERROR,
                 error=str(e)
             )
-        
+
         # 添加助手消息
         self.current_session.messages.append({
             "role": "assistant",
             "content": response,
             "timestamp": datetime.now().isoformat(),
         })
-        
+
         self.current_session.updated_at = datetime.now()
-        
+
         return response
+
+    async def chat_stream(self, message: str, imgs: Optional[ChatImages]=None) -> AsyncIterator[str]:
+        """
+        处理用户消息的入口（流式）
+
+        Yields:
+            流式文本片段
+
+        流程：
+        1. 意图识别（非流式）
+        2. 根据意图路由，流式返回响应
+        """
+        if not self.current_session:
+            yield "会话未初始化"
+            return
+
+        state = self.current_session.state
+
+        # 检查轮数限制
+        if state.turn_count >= state.max_turns:
+            yield await self._handle_interrupt(
+                ConsultationInterruptReason.MAX_TURNS_EXCEEDED
+            )
+            return
+        state.turn_count += 1
+
+        # 添加用户消息
+        self.current_session.messages.append({
+            "role": "user",
+            "content": message,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+        try:
+            # ========== 步骤1：意图识别（非流式） ==========
+            intention_result = await self.intention_agent.recognize(
+                message,
+                self._get_intention_context()
+            )
+
+            logger.info(f"Intention recognized: {intention_result.category}")
+            state.current_intent = intention_result.category
+
+            # ========== 步骤2：根据意图路由（流式） ==========
+            category = get_enum_value(intention_result.category)
+
+            if category == "general_medical":
+                async for chunk in self._handle_general_consultation_stream(message):
+                    yield chunk
+
+            elif category == "consultation":
+                async for chunk in self._handle_medical_consultation_stream(message, intention_result, imgs):
+                    yield chunk
+
+            elif category == "other":
+                async for chunk in self._handle_other_question_stream(message):
+                    yield chunk
+
+            else:
+                yield "抱歉，我无法理解您的问题。您可以：\n1. 描述您的健康问题，我会为您问诊\n2. 咨询一般的中医健康知识"
+
+        except Exception as e:
+            logger.error(f"Error in chat_stream: {traceback.format_exc()}")
+            yield await self._handle_interrupt(
+                ConsultationInterruptReason.ABNORMAL_ERROR,
+                error=str(e)
+            )
+
+        self.current_session.updated_at = datetime.now()
     
     def _get_intention_context(self) -> Dict[str, Any]:
         """获取意图识别的上下文"""
@@ -315,19 +386,19 @@ class TCMConsultationSystem:
     ) -> str:
         """根据意图路由到不同的 Agent"""
         category = get_enum_value(intention.category)
-        
+
         if category == "general_medical":
             # 普通医疗咨询 -> RAG 检索
             return await self._handle_general_consultation(message)
-        
+
         elif category == "consultation":
             # 医疗问诊 -> 多轮问答收集信息
             return await self._handle_medical_consultation(message, intention, imgs)
-        
+
         elif category == "other":
             # 其他问题 -> 其他 Agent 处理
             return await self._handle_other_question(message)
-        
+
         else:
             # 未知意图 -> 引导进入问诊或普通咨询
             return "抱歉，我无法理解您的问题。您可以：\n1. 描述您的健康问题，我会为您问诊\n2. 咨询一般的中医健康知识"
@@ -335,10 +406,14 @@ class TCMConsultationSystem:
     async def _handle_general_consultation(self, message: str) -> str:
         """
         处理普通咨询（接入 RAG）
+
+        Returns:
+            - enable_stream=True: 返回完整文本（流式在 chat_stream 中处理）
+            - enable_stream=False: 直接返回文本
         """
         # RAG 检索
         kb_results = self.knowledge_base.search_similar(message, max_results=5)
-        
+
         # 构建参考信息
         context = ""
         if kb_results:
@@ -346,19 +421,77 @@ class TCMConsultationSystem:
             for i, result in enumerate(kb_results, 1):
                 content = result.get('content', '')[:500]
                 context += f"{i}. {content}\n\n"
-        
+
         # 构建提示
         prompt = f"用户问题：{message}\n\n{context}\n请根据以上信息回答用户的问题。"
-        
+
         # 调用 Agent
         result = await self.general_consultation_agent.run(prompt)
-        
-        response = result.content
-        
+
+        response = result.content if hasattr(result, 'content') else str(result)
+
         # 添加就医建议
         response += f"\n\n💡 如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
-        
+
         return response
+
+    async def _handle_general_consultation_stream(self, message: str) -> AsyncIterator[str]:
+        """
+        处理普通咨询（接入 RAG）- 流式版本
+        """
+        # RAG 检索
+        kb_results = self.knowledge_base.search_similar(message, max_results=5)
+
+        # 构建参考信息
+        context = ""
+        if kb_results:
+            context = "【参考信息】\n"
+            for i, result in enumerate(kb_results, 1):
+                content = result.get('content', '')[:500]
+                context += f"{i}. {content}\n\n"
+
+        # 构建提示
+        prompt = f"用户问题：{message}\n\n{context}\n请根据以上信息回答用户的问题。"
+
+        # 流式调用 Agent
+        full_response = ""
+        async for chunk in self.general_consultation_agent.run_stream(prompt):
+            if hasattr(chunk, 'content') and chunk.content:
+                full_response += chunk.content
+                yield chunk.content
+
+        # 添加就医建议
+        if full_response:
+            yield f"\n\n💡 如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
+
+        # 保存完整响应到会话
+        self.current_session.messages.append({
+            "role": "assistant",
+            "content": full_response,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    async def _handle_other_question(self, message: str) -> str:
+        """处理其他问题"""
+        # TODO 调用agent进行处理
+        return f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
+
+    async def _handle_other_question_stream(self, message: str) -> AsyncIterator[str]:
+        """处理其他问题 - 流式版本"""
+        # TODO 实现流式版本
+        response = f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
+
+        # 简单模拟打字效果
+        for char in response:
+            yield char
+            await asyncio.sleep(0.01)
+
+        # 保存完整响应
+        self.current_session.messages.append({
+            "role": "assistant",
+            "content": response,
+            "timestamp": datetime.now().isoformat(),
+        })
     
     async def _handle_medical_consultation(
         self,
@@ -402,7 +535,6 @@ class TCMConsultationSystem:
             )
             if is_required:
                 state.pending_slots.append(key)
-        logger.debug(f"初始化state.pending_slots: {state.pending_slots}")
         
         state.current_slot_key = None
         
@@ -417,7 +549,7 @@ class TCMConsultationSystem:
         
         if visit_type_text == "复诊":
             welcome += "您是复诊患者，请问您这次有什么需要咨询的呢？"
-            # 复诊跳过基本信息，直接问主诉
+            # TODO 从接口更新槽位信息，复诊跳过基本信息，直接问主诉
             state.pending_slots = [s for s in state.pending_slots if s not in ["gender", "age"]]
         else:
             welcome += " 我了解到您是初次就诊。为了更好地为您服务，我需要了解一些信息。"
@@ -443,6 +575,8 @@ class TCMConsultationSystem:
             return await self._finish_consultation()
 
         # 2️⃣ 构造当前上下文（槽位 + 历史）
+        if imgs:
+            await self._process_uploaded_images(imgs, state)
         slot_state = {
             k: v.value if hasattr(v, "value") else str(v)
             for k, v in state.collected_slots.items()
@@ -452,10 +586,15 @@ class TCMConsultationSystem:
             k for k in REQUIRED_SLOTS
             if state.slot_status.get(k, SlotCollectionStatus(key=k)).status != SlotStatus.COLLECTED
         ]
+        print(f"pending_slots: {pending_slots}")
+        print(f"slot_state: {slot_state}")
+        print(f"intention.category: {intention.category}")
+        print(f"intention.follow_up_question: {intention.follow_up_question}")
 
         # 3️⃣ 构造 prompt
         prompt = f"""
-    你是中医问诊助手，需要通过对话完成患者信息采集。
+    你是中医问诊助手，需要通过对话完成患者信息采集
+    建议继续询问的内容是：{intention.follow_up_question}
 
     【当前已收集信息】
     {slot_state}
@@ -470,82 +609,423 @@ class TCMConsultationSystem:
     1. 从用户输入中提取可以更新的槽位
     2. 更新槽位（只填有把握的）
     3. 生成一句自然的追问（优先收集未完成槽位）
+    4. 每次针对某个部位或者某一个症状进行询问时，可以1到2个问题，其余情况禁止一次询问多个问题
 
     输出结构化结果
     """
 
-        llm_result = self.medical_consultation_agent.run(prompt)
+        llm_result = await self.medical_consultation_agent.run(prompt)
 
-        # 遍历new_slots 更新槽位信息 
-        new_slots = llm_result.get("slot_updates", {})
-        reply = llm_result.get("reply", "")
+        # 从 RunResponse 中提取结果
+        logger.info(f"medical_consultation_agent result: {llm_result}")
+        # response_model 会让 Agent 返回结构化数据
+        consultation_result = None
+        if hasattr(llm_result, 'parsed'):
+            consultation_result = llm_result.parsed
+        elif hasattr(llm_result, 'content'):
+            # 如果没有 parsed，content 可能包含结构化文本
+            consultation_result = llm_result.content
+
+        # 解析槽位更新
+        new_slots = {}
+        reply = ""
+
+        if consultation_result:
+            if isinstance(consultation_result, ConsultationTurnResult):
+                # 结构化响应
+                new_slots = {s.field: s.value for s in consultation_result.slot_updates}
+                reply = consultation_result.reply
+            elif isinstance(consultation_result, str):
+                # 文本响应，尝试简单提取
+                reply = consultation_result
+
+        # 如果 reply 为空，使用默认回复
+        if not reply:
+            reply = "能再详细说一下吗"
 
         for k, v in new_slots.items():
             if k in state.slot_status:
                 state.collected_slots[k] = v
                 state.slot_status[k].status = SlotStatus.COLLECTED
+        logger.debug(f"已经收集的槽位置{state.collected_slots}")
+        logger.debug(f"已经收集的槽位状态{state.slot_status}")
 
         # 7️⃣ 判断是否全部完成
         required_done = all(
             state.slot_status.get(k, SlotCollectionStatus(key=k)).status == SlotStatus.COLLECTED
             for k in REQUIRED_SLOTS
         )
-
-        # 8️⃣ 特殊槽位：舌照 / 面照
-        if required_done:
-            if state.slot_status.get("tongue").status != SlotStatus.COLLECTED:
-                return "请上传舌面照片，包括舌上和舌下"
-
-            if state.slot_status.get("face").status != SlotStatus.COLLECTED:
-                return "请上传面部照片"
-
-            if state.slot_status.get("report").status != SlotStatus.COLLECTED:
-                return "如果有检查报告，也可以上传"
-
-            state.consultation_phase = ConsultationPhase.SUPPLEMENTARY
-            return "好的，基本信息已收集，还有需要补充的吗"
-
-        # 9️⃣ 返回大模型生成的问题
+        # 如果槽位收集完成，通知前端收集特殊槽位：舌照 / 面照 / 检查报告
+        if consultation_result and consultation_result.control.next_action == "ask_image":
+            return self._create_image_request_response(consultation_result.image_request, consultation_result.reply)
+        
+        if consultation_result and consultation_result.control.next_action == "finish":
+            return await self._handle_supplementary_phase(message)
         return reply or "能再详细说一下吗"
+
+    async def _handle_medical_consultation_stream(
+        self,
+        message: str,
+        intention: IntentionResult,
+        imgs: Optional[ChatImages]=None
+    ) -> AsyncIterator[str]:
+        """医疗问诊（多轮问答）- 流式版本
+
+        注意：此函数会分块 yield 响应文本，用于流式输出
+        """
+        state = self.current_session.state
+
+        # 问诊阶段
+        if state.consultation_phase == ConsultationPhase.CONSULTATION:
+            async for chunk in self._handle_consultation_phase_stream(message, intention, imgs):
+                yield chunk
+
+        # 补充信息阶段
+        elif state.consultation_phase == ConsultationPhase.SUPPLEMENTARY:
+            async for chunk in self._handle_supplementary_phase_stream(message):
+                yield chunk
+
+        # 完成阶段
+        elif state.consultation_phase == ConsultationPhase.COMPLETE:
+            async for chunk in self._handle_complete_phase_stream():
+                yield chunk
+
+        else:
+            yield "系统状态异常"
+
+    async def _handle_consultation_phase_stream(
+        self,
+        message: str,
+        intention: IntentionResult,
+        imgs: Optional[ChatImages]=None
+    ) -> AsyncIterator[str]:
+        """问诊阶段 - 流式版本"""
+        state = self.current_session.state
+
+        # 1️⃣ 判断是否结束
+        if self._should_end_consultation(message.lower(), message):
+            async for chunk in self._finish_consultation_stream():
+                yield chunk
+            return
+
+        # 2️⃣ 处理上传的图片
+        if imgs:
+            await self._process_uploaded_images(imgs, state)
+
+        slot_state = {
+            k: v.value if hasattr(v, "value") else str(v)
+            for k, v in state.collected_slots.items()
+        }
+
+        pending_slots = [
+            k for k in REQUIRED_SLOTS
+            if state.slot_status.get(k, SlotCollectionStatus(key=k)).status != SlotStatus.COLLECTED
+        ]
+
+        # 3️⃣ 构造 prompt
+        prompt = f"""
+    你是中医问诊助手，需要通过对话完成患者信息采集
+    建议继续询问的内容是：{intention.follow_up_question}
+
+    【当前已收集信息】
+    {slot_state}
+
+    【还需要收集的槽位】
+    {pending_slots}
+
+    【用户输入】
+    {message}
+
+    请完成：
+    1. 从用户输入中提取可以更新的槽位
+    2. 更新槽位（只填有把握的）
+    3. 生成一句自然的追问（优先收集未完成槽位）
+    4. 每次针对某个部位或者某一个症状进行询问时，可以1到2个问题，其余情况禁止一次询问多个问题
+
+    输出结构化结果
+    """
+
+        # 非流式调用获取结果
+        llm_result = await self.medical_consultation_agent.run(prompt)
+        logger.info(f"medical_consultation_agent result: {llm_result}, type: {type(llm_result)}")
+
+        # 解析结果
+        if not llm_result:
+            yield "系统繁忙，请稍后再试"
+            return
         
-        # 继续问下一个槽位， 这里应该调用中医大模型agent进行问题回复，不是给出固定提问
-        next_slot_key = self._get_next_pending_slot()
-        if next_slot_key:
-            slot_def = get_slot_by_key(next_slot_key)
-            if slot_def:
-                return slot_def["question"]
-        
-        # 所有槽位收集完成
-        return await self._finish_consultation()
-    
+
+        # 提取回复文本
+        reply = ""
+        new_slots = {}
+        consultation_result = llm_result.content if isinstance(llm_result, RunResponse) else llm_result
+        logger.info(f"consultation_result: {consultation_result}, type: {type(consultation_result)}")
+
+        if isinstance(consultation_result, ConsultationTurnResult):
+            new_slots = {s.field: s.value for s in consultation_result.slot_updates}
+            reply = consultation_result.reply
+        elif isinstance(consultation_result, str):
+            reply = consultation_result
+
+        if not reply:
+            reply = "能再详细说一下吗"
+
+        # 更新槽位
+        for k, v in new_slots.items():
+            if k in state.slot_status:
+                state.collected_slots[k] = v
+                state.slot_status[k].status = SlotStatus.COLLECTED
+
+        # 检查控制流
+        if consultation_result.control.next_action == "ask_image":
+            response = self._create_image_request_response(
+                consultation_result.image_request,
+                consultation_result.reply,
+            )
+            # 流式输出
+            for char in response:
+                yield char
+            return
+
+        if consultation_result.control.next_action == "finish":
+            async for chunk in self._handle_supplementary_phase_stream(message):
+                yield chunk
+            return
+
+        # 流式输出回复
+        for char in reply:
+            yield char
+            await asyncio.sleep(0.005)
+
+    async def _handle_supplementary_phase_stream(self, message: str) -> AsyncIterator[str]:
+        """补充信息阶段 - 流式版本"""
+        state = self.current_session.state
+
+        state.supplementary_info = message
+        state.consultation_phase = ConsultationPhase.COMPLETE
+        state.slot_status["supplementary"].status = SlotStatus.COLLECTED
+        state.slot_status["supplementary"].value = message
+
+        async for chunk in self._finish_consultation_stream():
+            yield chunk
+
+    async def _handle_complete_phase_stream(self) -> AsyncIterator[str]:
+        """完成阶段 - 流式版本"""
+        diagnosis_text = await self._generate_diagnosis()
+
+        for char in diagnosis_text:
+            yield char
+            await asyncio.sleep(0.005)
+
     async def _handle_supplementary_phase(self, message: str) -> str:
         """补充信息阶段"""
         state = self.current_session.state
-        msg_lower = message.lower()
-        
-        # TODO 这部分让前端给出默认无
-        if message and msg_lower not in ["无", "没有", "没了", "没有了"]:
-            state.supplementary_info = message
-        
+
+        state.supplementary_info = message
+        state.consultation_phase = ConsultationPhase.COMPLETE
+        state.slot_status["supplementary"].status = SlotStatus.COLLECTED
+        state.slot_status["supplementary"].value = message
+
         # 结束问诊
         return await self._finish_consultation()
+
+    async def _process_uploaded_images(self, imgs: ChatImages, state: ConsultationState):
+        """处理上传的图片，根据类型调用不同的解析服务
+        
+        Args:
+            imgs: 上传的图片数据（区分舌照、面照、检查报告）
+            state: 问诊状态
+        """
+        # 舌照处理
+        if imgs.tongue_imgs:
+            state.tongue_image_url = imgs.tongue_imgs[0] if imgs.tongue_imgs else None
+            state.tongue_analysis = await self._analyze_tongue(imgs.tongue_imgs)
+            state.slot_status["tongue"].status = SlotStatus.COLLECTED
+            state.slot_status["tongue"].value = {"url": state.tongue_image_url, "analysis": state.tongue_analysis}
+            logger.info(f"Tongue image processed, analysis: {state.tongue_analysis[:50]}...")
+
+        # 面照处理
+        if imgs.face_imgs:
+            state.face_image_url = imgs.face_imgs[0] if imgs.face_imgs else None
+            state.face_analysis = await self._analyze_face(imgs.face_imgs)
+            state.slot_status["face"].status = SlotStatus.COLLECTED
+            state.slot_status["face"].value = {"url": state.face_image_url, "analysis": state.face_analysis}
+            logger.info(f"Face image processed, analysis: {state.face_analysis[:50]}...")
+
+        # 检查报告处理
+        if imgs.check_imgs:
+            state.exam_report_url = imgs.check_imgs[0] if imgs.check_imgs else None
+            state.exam_report_summary = await self._analyze_exam_report(imgs.check_imgs)
+            state.slot_status["report"].status = SlotStatus.COLLECTED
+            state.slot_status["report"].value = {"url": state.exam_report_url, "summary": state.exam_report_summary}
+            logger.info(f"Exam report processed, summary: {state.exam_report_summary[:50]}...")
+
+    def _create_image_request_response(self, image_type: str, message: str) -> str:
+        """创建带 image_request 标记的响应，用于通知前端需要上传哪种图片
+        
+        Args:
+            image_type: 图片类型，可选值 "tongue" | "face" | "report"
+            message: 返回给用户的消息
+            
+        Returns:
+            格式化的响应字符串，前端可通过解析获取 image_request
+        """
+        # 将 image_request 信息附加到返回消息中
+        # 前端可以通过解析响应来获取 image_type
+        # 建议前端使用正则或字符串匹配来提取 image_request
+        return f"[IMAGE_REQUEST:{image_type}]{message}"
+
+    async def _analyze_tongue(self, imgs: List[str]) -> str:
+        """舌照分析 - 调用视觉模型分析舌象
+        
+        Args:
+            imgs: 舌照URL列表
+            
+        Returns:
+            舌象分析结果，包含舌质、舌苔等特征描述
+        """
+        if not imgs:
+            return ""
+
+        # 构造分析提示词
+        prompt = """请分析这张舌象照片，从中医角度描述：
+1. 舌质颜色（淡红/红/绛/紫/淡白等）
+2. 舌形（胖瘦、老嫩、裂纹、齿痕等）
+3. 舌苔（薄厚、颜色、润燥、腐腻等）
+4. 其他特征
+
+请用简洁的中医术语描述。"""
+
+        try:
+            # 调用视觉模型进行分析
+            # 这里使用 qwen-vl 或其他视觉模型
+            result = await self._call_vision_model(imgs, prompt)
+            return result
+        except Exception as e:
+            logger.error(f"Tongue analysis error: {e}")
+            return f"舌象分析完成（分析服务暂时不可用）"
+
+    async def _analyze_face(self, imgs: List[str]) -> str:
+        """面照分析 - 调用视觉模型分析面色
+        
+        Args:
+            imgs: 面照URL列表
+            
+        Returns:
+            面部分析结果，包含面色、面部特征等描述
+        """
+        if not imgs:
+            return ""
+
+        prompt = """请分析这张面部照片，从中医望诊角度描述：
+1. 面色（红润/苍白/萎黄/潮红/晦暗等）
+2. 面部光泽（明润/晦暗/油腻等）
+3. 特殊部位特征（眼袋、色斑、痤疮等）
+4. 整体神态
+
+请用简洁的中医术语描述。"""
+
+        try:
+            result = await self._call_vision_model(imgs, prompt)
+            return result
+        except Exception as e:
+            logger.error(f"Face analysis error: {e}")
+            return f"面部分析完成（分析服务暂时不可用）"
+
+    async def _analyze_exam_report(self, imgs: List[str]) -> str:
+        """检查报告分析 - OCR识别 + 结构化提取
+        
+        Args:
+            imgs: 检查报告图片URL列表
+            
+        Returns:
+            检查报告摘要，包含关键指标和异常值
+        """
+        if not imgs:
+            return ""
+
+        prompt = """请识别并分析这张检查报告：
+1. 提取报告类型（血常规、尿常规、生化、影像等）
+2. 列出关键指标和数值
+3. 标注异常值（偏高/偏低）
+4. 给出简要的健康建议（如有异常）
+
+请用简洁、专业的语言描述。"""
+
+        try:
+            # 先进行 OCR 识别，再进行结构化提取
+            ocr_result = await self._call_vision_model(imgs, prompt)
+            return ocr_result
+        except Exception as e:
+            logger.error(f"Exam report analysis error: {e}")
+            return f"检查报告分析完成（分析服务暂时不可用）"
+
+    async def _call_vision_model(self, imgs: List[str], prompt: str) -> str:
+        """调用视觉模型进行图片分析
+        
+        Args:
+            imgs: 图片URL列表
+            prompt: 分析提示词
+            
+        Returns:
+            视觉模型的分析结果
+        """
+        from agentica import QwenVLChat
+
+        # 使用视觉模型进行分析
+        vision_model = QwenVLChat(id="qwen-vl-plus")
+
+        # 构建多图消息
+        image_contents = []
+        for img_url in imgs:
+            image_contents.append({"type": "image_url", "image_url": {"url": img_url}})
+
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": prompt}] + image_contents}
+        ]
+
+        try:
+            response = await vision_model.ainvoke(messages)
+            return response.content if hasattr(response, 'content') else str(response)
+        except Exception as e:
+            logger.error(f"Vision model call error: {e}")
+            raise
     
     async def _handle_complete_phase(self) -> str:
         """完成阶段"""
         return "问诊已完成，请查看上方诊断结果。"
     
     async def _finish_consultation(self) -> str:
-        """结束问诊，生成诊断"""
+        """结束问诊，生成诊断和病历"""
         state = self.current_session.state
         state.consultation_phase = ConsultationPhase.COMPLETE
-        
+
         # 生成诊断
         diagnosis_response = await self._generate_diagnosis()
-        
+
         # 异步生成结构化病历
         asyncio.create_task(self._generate_consultation_record())
-        
+
         return diagnosis_response
+
+    async def _finish_consultation_stream(self) -> AsyncIterator[str]:
+        """结束问诊 - 流式版本"""
+        state = self.current_session.state
+        state.consultation_phase = ConsultationPhase.COMPLETE
+
+        # 先发送提示
+        yield "正在生成诊断结果，请稍候...\n\n"
+
+        # 生成诊断
+        diagnosis_text = await self._generate_diagnosis()
+
+        # 流式输出诊断
+        for char in diagnosis_text:
+            yield char
+            await asyncio.sleep(0.005)
+
+        # 异步生成结构化病历
+        asyncio.create_task(self._generate_consultation_record())
     
     def _should_end_consultation(self, msg_lower: str, message: str) -> bool:
         """判断是否要结束问诊"""
@@ -729,7 +1209,7 @@ class TCMConsultationSystem:
             return "问诊轮数已达到上限，请重新开始或联系人工客服。"
         
         elif reason == ConsultationInterruptReason.PATIENT_QUIT:
-            return "您已结束问诊，感谢您的使用！"
+            return "您已结束问诊，感谢您使用！"
         
         elif reason == ConsultationInterruptReason.ABNORMAL_ERROR:
             logger.error(f"Consultation interrupted: {error}")

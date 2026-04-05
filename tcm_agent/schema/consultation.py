@@ -6,8 +6,8 @@ class CreateSessionRequest(BaseModel):
     """创建会话请求"""
     session_id: Optional[str] = None
     visit_type: Optional[str] = "first_visit"  # first_visit / follow_up_visit
-    doctor_id: int
-    patient_data: PatientInfo
+    doctor_id: Optional[int] = 1
+    patient_data: Optional[PatientInfo] = None
 
 class ChatImages(BaseModel):
     tongue_imgs: List[str] = []
@@ -19,7 +19,7 @@ class ChatRequest(BaseModel):
     session_id: str
     message: str
     visit_type: Optional[str] = None  # 可在聊天时更新就诊类型
-    imgs: ChatImages
+    imgs: Optional[ChatImages] = None  # 可选的图片数据
 
 
 class Message(BaseModel):

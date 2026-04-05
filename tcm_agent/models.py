@@ -247,7 +247,7 @@ class ConsultationRecord(BaseModel):
     
     # 补充信息
     supplementary_info: Optional[str] = Field(None, description="补充说明")
-    
+
     # 诊断
     diagnosis: Optional[DiagnosisInfo] = Field(None, description="诊断信息")
     treatment_plan: Optional[TreatmentPlan] = Field(None, description="治疗方案")
@@ -309,6 +309,7 @@ class ConsultationState(BaseModel):
     
     # 现病史
     symptoms: List[SymptomInfo] = Field(default_factory=list, description="症状列表")
+    # 现病史是诊疗经过的记录
     present_illness: Optional[str] = Field(None, description="现病史描述")
     
     # 既往史
@@ -337,7 +338,10 @@ class ConsultationState(BaseModel):
     # 检查报告
     exam_report_url: Optional[str] = Field(None, description="检查报告URL")
     exam_report_summary: Optional[str] = Field(None, description="检查报告摘要")
-    
+
+    # ========== 诊断结果 ==========
+    diagnosis: Optional[DiagnosisInfo] = None
+    treatment_plan: Optional[TreatmentPlan] = None 
     # 补充信息
     supplementary_info: Optional[str] = Field(None, description="补充说明")
     
@@ -345,10 +349,8 @@ class ConsultationState(BaseModel):
     slot_status: Dict[str, SlotCollectionStatus] = Field(default_factory=dict, description="槽位状态")
     pending_slots: List[str] = Field(default_factory=list, description="待收集槽位列表")
     current_slot_key: Optional[str] = Field(None, description="当前正在收集的槽位")
+    collected_slots: Dict[str, Any] = Field(default_factory=dict, description="已收集槽位")
     
-    # ========== 诊断结果 ==========
-    diagnosis: Optional[DiagnosisInfo] = None
-    treatment_plan: Optional[TreatmentPlan] = None
     
     # ========== 会话状态 ==========
     conversation_history: List[Dict[str, Any]] = Field(default_factory=list)
@@ -420,22 +422,8 @@ CONSULTATION_SLOTS_DEFINITION = [
 ]
 
 # 必需槽位
-REQUIRED_SLOTS = ["gender", "age", "chief_complaint"]
+REQUIRED_SLOTS = ["gender", "age", "chief_complaint", "symptoms", "past_history", "allergy", "marriage", "personal", "family"]
 
-# 按组划分的槽位
-SLOT_GROUPS = {
-    "basic": ["gender", "age"],
-    "chief_complaint": ["chief_complaint", "symptom_detail"],
-    "past": ["past_history"],
-    "allergy": ["allergy"],
-    "marriage": ["marriage_history"],
-    "personal": ["personal_history"],
-    "family": ["family_history"],
-    "tongue": ["tongue"],
-    "face": ["face"],
-    "exam": ["exam_report"],
-    "supplementary": ["supplementary"],
-}
 
 
 class IntentionResult(BaseModel):

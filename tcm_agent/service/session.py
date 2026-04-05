@@ -1,5 +1,6 @@
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, AsyncIterator
 import asyncio
+import json
 import uuid
 from datetime import datetime
 from tcm_agent.models import (
@@ -71,7 +72,7 @@ class SessionManager:
             state.consultation_phase = ConsultationPhase.CONSULTATION
             
             # 添加欢迎消息
-            welcome = f"您好！我是{DoctorNameMapping[doctor_id]}的数字分身, 请问有什么可以帮助您的？"
+            welcome = f"您好！我是{DoctorNameMapping[doctor_id]}的数字分身!"
             
             # 更新槽位信息，更新状态信息
             if visit_type == "复诊":
@@ -121,17 +122,26 @@ class SessionManager:
         async with self._lock:
             return self._sessions.get(session_id)
     
-    async def chat(self, session_id: str, message: str, imgs=[]) -> Tuple[str, Optional[str], bool]:
+    async def chat(self, session_id: str, message: str, imgs=None) -> Tuple[str, Optional[str], bool]:
         """
         处理聊天消息
-        
+
         Args:
             session_id: 会话ID
             message: 用户消息
-            
+            imgs: 可选的图片数据（ChatImages 或 dict）
+
         Returns:
             (response, phase, is_complete)
         """
+        # 处理图片数据格式
+        from tcm_agent.schema.consultation import ChatImages
+        chat_images = None
+        if imgs is not None:
+            if isinstance(imgs, dict):
+                chat_images = ChatImages(**imgs)
+            else:
+                chat_images = imgs
         async with self._lock:
             tcmagent = self._sessions.get(session_id)
             if not tcmagent:
@@ -150,7 +160,7 @@ class SessionManager:
         
         # 调用问诊系统（同步执行）
         try:
-            response = await tcmagent.chat(message, imgs)
+            response = await tcmagent.chat(message, chat_images)
         except Exception as e:
             logger.error(f"Chat error: {e}")
             response = f"抱歉，处理您的消息时出现了问题：{str(e)}"
@@ -175,6 +185,86 @@ class SessionManager:
         
         return response, phase, is_complete
     
+    async def chat_stream(self, session_id: str, message: str, imgs=None):
+        """
+        处理聊天消息（流式返回）
+
+        Args:
+            session_id: 会话ID
+            message: 用户消息
+            imgs: 可选的图片数据
+
+        Yields:
+            SSE 格式的数据
+        """
+        from tcm_agent.schema.consultation import ChatImages
+        chat_images = None
+        if imgs is not None:
+            if isinstance(imgs, dict):
+                chat_images = ChatImages(**imgs)
+            else:
+                chat_images = imgs
+
+        async with self._lock:
+            tcmagent = self._sessions.get(session_id)
+            if not tcmagent:
+                yield self._sse_format("error", "text", "会话不存在，请创建新会话")
+                return
+            
+            if tcmagent.current_session.status.value != "active":
+                yield self._sse_format("error", "text", "会话已结束，请创建新会话")
+                return
+
+        # 添加用户消息到历史
+        self._add_to_history(session_id, role="user", content=message)
+        self._histories[session_id].append({
+            "role": "user",
+            "content": message,
+            "timestamp": datetime.now().isoformat()
+        })
+
+        # 发送开始事件
+        yield self._sse_format("start", "text", "")
+
+        # 调用流式处理
+        try:
+            full_response = ""
+            async for chunk in tcmagent.chat_stream(message, chat_images):
+                full_response += chunk
+                logger.debug(f"chunk: {chunk}")
+                yield self._sse_format("text", "text", chunk)
+
+            # 添加助手回复到历史
+            self._add_to_history(session_id, role="assistant", content=full_response)
+            self._histories[session_id].append({
+                "role": "assistant",
+                "content": full_response,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # 更新状态
+            phase = None
+            is_complete = False
+            if tcmagent.current_session:
+                phase = tcmagent.current_session.state.consultation_phase
+                is_complete = tcmagent.current_session.state.is_complete
+                self._metadata[session_id]["phase"] = phase
+                if is_complete:
+                    self._metadata[session_id]["status"] = "completed"
+
+            # 发送完成事件
+            yield self._sse_format("done", "text", "", phase=str(phase), is_complete=str(is_complete))
+
+        except Exception as e:
+            logger.error(f"Chat stream error: {e}")
+            yield self._sse_format("error", "text", f"处理消息时出现错误：{str(e)}")
+
+    def _sse_format(self, event: str, msg_type: str, content: str, **extra) -> str:
+        """生成 SSE 格式的数据"""
+        data = {"event": event, "msg_type": msg_type, "content": content}
+        data.update(extra)
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
     async def get_history(self, session_id: str) -> List[Dict]:
         """获取聊天历史"""
         async with self._lock:
