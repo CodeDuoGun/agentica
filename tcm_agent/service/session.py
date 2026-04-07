@@ -75,10 +75,13 @@ class SessionManager:
             welcome = f"您好！我是{DoctorNameMapping[doctor_id]}的数字分身!"
             
             # 更新槽位信息，更新状态信息
-            if visit_type == "复诊":
-                welcome += " 您是复诊患者，请问您这次有什么需要咨询的呢？"
-                state.patient_info = PatientInfo(patient_data) 
-                state.pending_slots = [s for s in state.pending_slots if s not in ["gender", "age"]]
+            if visit_type == "follow_up_visit":
+                welcome += "请问您本次复诊需要咨询什么内容呢？"
+                state.patient_info = patient_data
+                state.pending_slots = [s for s in state.pending_slots if s not in ["name", "gender", "age"]]
+                state.collected_slots["name"] = patient_data.name
+                state.collected_slots["gender"] = patient_data.gender
+                state.collected_slots["age"] = patient_data.age
             else:
                 welcome += " 我了解到您是初次就诊。为了更好地为您服务，能麻烦说一下您的性别和年龄么？"
                 state.patient_info = PatientInfo()

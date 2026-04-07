@@ -705,3 +705,130 @@ header p {
     background: #ccc;
     cursor: not-allowed;
 }
+
+/* ==================== 就诊人选择区域 ==================== */
+.patient-select-area {
+    padding: 16px 20px;
+    background: #f8f9fa;
+    border-bottom: 1px solid #eee;
+    flex-shrink: 0;
+}
+
+.patient-select-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.patient-select-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #333;
+}
+
+.patient-select-btn {
+    padding: 8px 16px;
+    background: white;
+    border: 2px solid var(--primary-color);
+    border-radius: 20px;
+    font-size: 0.9rem;
+    color: var(--primary-color);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.patient-select-btn:hover {
+    background: var(--primary-color);
+    color: white;
+}
+
+.patient-list {
+    display: none;
+    margin-top: 12px;
+    padding: 12px;
+    background: white;
+    border-radius: 12px;
+    border: 2px solid var(--accent-color);
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.patient-list.show {
+    display: block;
+}
+
+.patient-item {
+    padding: 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 2px solid transparent;
+    margin-bottom: 8px;
+}
+
+.patient-item:last-child {
+    margin-bottom: 0;
+}
+
+.patient-item:hover {
+    background: var(--user-bg);
+    border-color: var(--secondary-color);
+}
+
+.patient-item.selected {
+    background: var(--user-bg);
+    border-color: var(--primary-color);
+}
+
+.patient-item-name {
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 4px;
+}
+
+.patient-item-detail {
+    font-size: 0.85rem;
+    color: #666;
+}
+
+.patient-selected-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: var(--user-bg);
+    border-radius: 12px;
+    border: 2px solid var(--primary-color);
+    margin-top: 12px;
+}
+
+.patient-name {
+    font-weight: 600;
+    color: #333;
+}
+
+.patient-detail {
+    font-size: 0.85rem;
+    color: #666;
+    flex: 1;
+}
+
+.patient-change-btn {
+    padding: 6px 12px;
+    background: white;
+    border: 1px solid #ddd;
+    border-radius: 16px;
+    font-size: 0.8rem;
+    color: #666;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.patient-change-btn:hover {
+    background: white;
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
