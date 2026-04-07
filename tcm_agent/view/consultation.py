@@ -2,10 +2,11 @@ import re
 import traceback
 from datetime import datetime
 from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse
 from tcm_agent.utils.response import general_response
 from log import logger
-from typing import Dict, Any, List
-from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, ChatResponse,Message 
+from typing import Dict, Any, List, AsyncIterator
+from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, ChatResponse,Message
 from fastapi import FastAPI, HTTPException
 from tcm_agent.service.session import session_manager
 router = APIRouter()
@@ -60,36 +61,35 @@ async def get_chat_history(session_id: str):
     ]
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post("/chat")
 async def chat(request: ChatRequest):
     """
-    发送聊天消息
+    发送聊天消息（SSE 流式返回）
     
     Request:
         - session_id: 会话ID
         - message: 用户消息
     
     Returns:
-        - session_id: 会话ID
-        - response: 助手回复
-        - phase: 当前阶段
-        - is_complete: 是否完成
+        SSE 流，包含 event, msg_type, content 字段
+        msg_type: text, img, object
+        event: start, text, done, error
     """
     if not request.message.strip():
         raise HTTPException(status_code=400, detail="消息不能为空")
     
-    response, phase, is_complete = await session_manager.chat(
-        request.session_id,
-        request.message,
-        request.imgs
-    )
-    
-    return ChatResponse(
-        session_id=request.session_id,
-        response=response,
-        phase=phase,
-        is_complete=is_complete,
-        timestamp=datetime.now().isoformat()
+    return StreamingResponse(
+        session_manager.chat_stream(
+            request.session_id,
+            request.message,
+            request.imgs
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
     )
 
 

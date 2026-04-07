@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 import uvicorn
 from log import logger
@@ -50,8 +51,10 @@ app.include_router(api_router, prefix="/api")
 # ==================== 静态文件服务 ====================
 
 web_dir = os.path.dirname(os.path.abspath(__file__))
-print(web_dir)
-index_path = os.path.join(web_dir, "web/index.html")
+index_path = os.path.join(web_dir, "web", "index.html")
+
+# 挂载静态文件目录（CSS 和 JS）
+app.mount("/static", StaticFiles(directory=os.path.join(web_dir, "web")), name="static")
 
 
 @app.get("/", response_class=FileResponse)
@@ -67,7 +70,7 @@ def main():
     print("中医智能问诊系统 Web API")
     print("=" * 60)
     print(f"API 地址: http://{HOST}:{PORT}")
-    print(f"前端页面: http://{HOST}:{PORT}/")
+    print(f"前端页面: http://127.0.0.1:{PORT}/")
     print(f"API 文档: http://{HOST}:{PORT}/docs")
     print("=" * 60)
     
