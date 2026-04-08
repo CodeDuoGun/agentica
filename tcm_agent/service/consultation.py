@@ -10,6 +10,7 @@ TCM Consultation System - 主协调系统
 4. 完成后 -> 异步生成结构化病历
 """
 import asyncio
+from tkinter.constants import Y
 import traceback
 import re
 from typing import Dict, Any, Optional, List, AsyncIterator
@@ -49,6 +50,7 @@ from tcm_agent.knowledge import TCMKnowledgeBase
 from tcm_agent.intention import IntentionRecognitionAgent
 from tcm_agent.schema.consultation import ChatImages
 from log import logger
+from tcm_agent.constants import consultation_completed
 
 
 class SessionStatus(Enum):
@@ -98,17 +100,13 @@ class TCMConsultationSystem:
         max_turns: int = 50,
     ):
         self.max_turns = max_turns
-        
         # 初始化知识库
         self.knowledge_base = TCMKnowledgeBase()
         self.knowledge_base.initialize()
-        
         # 初始化 Agent
         self._init_agents()
-        
         # 当前会话
         self.current_session: Optional[ConsultationSession] = None
-        
         # 初始化状态
         self.state = ConsultationState()
     
@@ -116,29 +114,37 @@ class TCMConsultationSystem:
         """初始化各个 Agent"""
         # 基础模型
         base_model = QwenChat(id="qwen-plus", temperature=0.7)
-        
         # 意图识别 Agent
         intention_model = QwenChat(id="qwen-plus", temperature=0.1)
         self.intention_agent = IntentionRecognitionAgent(model=intention_model)
-        
         # 普通咨询 Agent（带 RAG）
         self._init_general_consultation_agent()
         
         # 医疗问诊 Agent
         self._init_medical_consultation_agent()
-        
         self._init_diagnosis_agent()
     
     def _init_diagnosis_agent(self):
         """初始化问诊agent， 给出诊断结果和建议开方"""
         model = QwenChat(id="qwen-plus", temperature=0.1)
-        system_prompt = "你是中医诊断和建议开方专家，根据用户的问题，给出诊断结果和建议处方" 
-        # TODO 指定response_model=DiagnosisInfo
+        system_prompt = """你是中医诊断专家。请严格基于问诊信息输出结构化诊断结果。
+
+你必须返回以下字段：
+1. syndrome_type: 中医证型
+2. tcm_diagnosis: 中医证名
+3. analysis: 辨证分析
+4. prescription_recommendation: 处方建议
+
+要求：
+- 内容专业、简洁、明确
+- 如果信息不足，也要基于已有信息给出最合理判断
+- 不要输出字段以外的多余说明"""
         self.diagnosis_agent = Agent(
             model=model,
             name="MedicalDiagnosisAgent",
             instructions=system_prompt,
             add_history_to_messages=True,
+            response_model=DiagnosisInfo,
             history_window=20,
         )
 
@@ -233,8 +239,6 @@ class TCMConsultationSystem:
     
     async def chat(self, message: str, imgs: Optional[ChatImages]=None) -> str:
         """
-        处理用户消息的入口（非流式）
-
         流程：
         1. 意图识别
         2. 根据意图路由
@@ -293,11 +297,6 @@ class TCMConsultationSystem:
 
     async def chat_stream(self, message: str, imgs: Optional[ChatImages]=None) -> AsyncIterator[str]:
         """
-        处理用户消息的入口（流式）
-
-        Yields:
-            流式文本片段
-
         流程：
         1. 意图识别（非流式）
         2. 根据意图路由，流式返回响应
@@ -394,7 +393,6 @@ class TCMConsultationSystem:
             return await self._handle_medical_consultation(message, intention, imgs)
 
         elif category == "other":
-            # 其他问题 -> 其他 Agent 处理
             return await self._handle_other_question(message)
 
         else:
@@ -472,7 +470,6 @@ class TCMConsultationSystem:
 
     async def _handle_other_question_stream(self, message: str) -> AsyncIterator[str]:
         """处理其他问题 - 流式版本"""
-        # TODO 实现流式版本
         response = f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
 
         # 简单模拟打字效果
@@ -508,47 +505,10 @@ class TCMConsultationSystem:
         
         # 完成阶段
         elif state.consultation_phase == ConsultationPhase.COMPLETE:
-            return await self._handle_complete_phase()
+            return consultation_completed 
         
         return "系统状态异常"
     
-    async def _handle_welcome(self, message: str, intention: IntentionResult) -> str:
-        """欢迎阶段 - 初始化问诊"""
-        state = self.current_session.state
-        visit_type = state.visit_type
-        visit_type_text = "复诊" if visit_type == ConsultationVisitType.FOLLOW_UP_VISIT else "初诊"
-        
-        # 初始化槽位状态
-        state.pending_slots = []
-        for slot_def in CONSULTATION_SLOTS_DEFINITION:
-            key = slot_def["key"]
-            is_required = slot_def["required"]
-            state.slot_status[key] = SlotCollectionStatus(
-                key=key,
-                status=SlotStatus.PENDING if is_required else SlotStatus.SKIPPED
-            )
-            if is_required:
-                state.pending_slots.append(key)
-        
-        state.current_slot_key = None
-        
-        # 初始化患者信息
-        state.patient_info = PatientInfo()
-        
-        # 进入问诊阶段
-        state.consultation_phase = ConsultationPhase.CONSULTATION
-        
-        # 欢迎消息
-        welcome = f"您好！欢迎来到中医智能问诊系统。我是您的中医健康助手。"
-        
-        if visit_type_text == "复诊":
-            welcome += "您是复诊患者，请问您这次有什么需要咨询的呢？"
-            # TODO 从接口更新槽位信息，复诊跳过基本信息，直接问主诉
-            state.pending_slots = [s for s in state.pending_slots if s not in ["gender", "age"]]
-        else:
-            welcome += " 我了解到您是初次就诊。为了更好地为您服务，我需要了解一些信息。"
-        
-        return welcome
     
     async def _handle_consultation_phase(
         self,
@@ -580,10 +540,6 @@ class TCMConsultationSystem:
             k for k in REQUIRED_SLOTS
             if state.slot_status.get(k, SlotCollectionStatus(key=k)).status != SlotStatus.COLLECTED
         ]
-        print(f"pending_slots: {pending_slots}")
-        print(f"slot_state: {slot_state}")
-        print(f"intention.category: {intention.category}")
-        print(f"intention.follow_up_question: {intention.follow_up_question}")
 
         # 3️⃣ 构造 prompt
         prompt = f"""
@@ -678,11 +634,11 @@ class TCMConsultationSystem:
         elif state.consultation_phase == ConsultationPhase.SUPPLEMENTARY:
             async for chunk in self._handle_supplementary_phase_stream(message):
                 yield chunk
+            return
 
         # 完成阶段
         elif state.consultation_phase == ConsultationPhase.COMPLETE:
-            async for chunk in self._handle_complete_phase_stream():
-                yield chunk
+            yield consultation_completed
 
         else:
             yield "系统状态异常"
@@ -782,9 +738,7 @@ class TCMConsultationSystem:
             return
 
         if consultation_result.control.next_action == "finish":
-            async for chunk in self._handle_supplementary_phase_stream(message):
-                yield chunk
-            return
+            state.consultation_phase = ConsultationPhase.SUPPLEMENTARY
 
         # 流式输出回复
         for char in reply:
@@ -803,13 +757,6 @@ class TCMConsultationSystem:
         async for chunk in self._finish_consultation_stream():
             yield chunk
 
-    async def _handle_complete_phase_stream(self) -> AsyncIterator[str]:
-        """完成阶段 - 流式版本"""
-        diagnosis_text = await self._generate_diagnosis()
-
-        for char in diagnosis_text:
-            yield char
-            await asyncio.sleep(0.005)
 
     async def _handle_supplementary_phase(self, message: str) -> str:
         """补充信息阶段"""
@@ -985,22 +932,17 @@ class TCMConsultationSystem:
             logger.error(f"Vision model call error: {e}")
             raise
     
-    async def _handle_complete_phase(self) -> str:
-        """完成阶段"""
-        return "问诊已完成，请查看上方诊断结果。"
-    
     async def _finish_consultation(self) -> str:
         """结束问诊，生成诊断和病历"""
         state = self.current_session.state
         state.consultation_phase = ConsultationPhase.COMPLETE
 
-        # 生成诊断
-        diagnosis_response = await self._generate_diagnosis()
-
+        # TODO 第一期不做诊断
+        yield f"{consultation_completed}\n\n" 
+        
         # 异步生成结构化病历
         asyncio.create_task(self._generate_consultation_record())
-
-        return diagnosis_response
+        return
 
     async def _finish_consultation_stream(self) -> AsyncIterator[str]:
         """结束问诊 - 流式版本"""
@@ -1008,16 +950,7 @@ class TCMConsultationSystem:
         state.consultation_phase = ConsultationPhase.COMPLETE
 
         # 先发送提示
-        yield "正在生成诊断结果，请稍候...\n\n"
-
-        # 生成诊断
-        diagnosis_text = await self._generate_diagnosis()
-
-        # 流式输出诊断
-        for char in diagnosis_text:
-            yield char
-            await asyncio.sleep(0.005)
-
+        yield f"{consultation_completed}\n\n"
         # 异步生成结构化病历
         asyncio.create_task(self._generate_consultation_record())
     
@@ -1064,36 +997,34 @@ class TCMConsultationSystem:
         # TODO 调用agent进行处理
         return f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
     
-    async def _generate_diagnosis(self) -> str:
+    async def _generate_diagnosis(self) -> DiagnosisInfo:
         """生成诊断结果"""
         state = self.current_session.state
-        
-        # 构建诊断上下文
+
         diagnosis_context = self._build_diagnosis_context()
-        
-        # 调用 Agent 生成诊断
-        prompt = f"""请根据以下问诊信息进行中医辨证论治：
+
+        prompt = f"""请根据以下问诊信息进行中医诊断，并严格返回结构化结果：
 
 {diagnosis_context}
 
-请给出：
-1. 辨证分析
-2. 证型诊断
-3. 治法方药建议
-4. 养生调护建议
+返回字段要求：
+- syndrome_type: 中医证型
+- tcm_diagnosis: 中医证名
+- analysis: 辨证分析
+- prescription_recommendation: 处方建议
+"""
 
-请用专业、简洁的语言回复。"""
-        
         result = await self.diagnosis_agent.run(prompt)
-        
-        diagnosis_text = result.content
-        
-        # 保存诊断信息
-        state.diagnosis = DiagnosisInfo(
-            analysis=diagnosis_text,
-        )
-        
-        return diagnosis_text
+
+        diagnosis_info = result.content
+        if isinstance(diagnosis_info, DiagnosisInfo):
+            state.diagnosis = diagnosis_info
+        else:
+            state.diagnosis = DiagnosisInfo(
+                analysis=str(diagnosis_info),
+            )
+
+        return state.diagnosis
     
     def _build_diagnosis_context(self) -> str:
         """构建诊断上下文"""
@@ -1145,6 +1076,7 @@ class TCMConsultationSystem:
         state = self.current_session.state
         
         try:
+            diagnosis_response = await self._generate_diagnosis()
             record = ConsultationRecord(
                 session_id=state.session_id,
                 visit_type=state.visit_type,
@@ -1183,7 +1115,7 @@ class TCMConsultationSystem:
             
             state.consultation_record = record
             logger.info(f"Consultation record generated: {state.session_id}")
-            
+            # TODO  这部分内容存入数据库
             return record
             
         except Exception as e:
