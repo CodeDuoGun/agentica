@@ -127,10 +127,10 @@ class MedicalHistory(BaseModel):
 
 class DiagnosisInfo(BaseModel):
     """诊断信息"""
-    pattern_differentiation: Optional[str] = Field(None, description="辨证")
-    disease_diagnosis: Optional[str] = Field(None, description="病名诊断")
-    differential_diagnosis: Optional[List[str]] = Field(default_factory=list, description="鉴别诊断")
+    syndrome_type: Optional[str] = Field(None, description="中医证型")
+    tcm_diagnosis: Optional[str] = Field(None, description="中医证名")
     analysis: Optional[str] = Field(None, description="辨证分析")
+    prescription_recommendation: Optional[str] = Field(None, description="处方建议")
     
     class Config:
         use_enum_values = True

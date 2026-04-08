@@ -219,7 +219,10 @@ class SessionManager:
         from tcm_agent.schema.consultation import ChatImages
         chat_images = None
         if imgs is not None:
-            chat_images = ChatImages(**imgs)
+            if isinstance(imgs, dict):
+                chat_images = ChatImages(**imgs)
+            else:
+                chat_images = imgs
 
         async with self._lock:
             tcmagent = self._sessions.get(session_id)

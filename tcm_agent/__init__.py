@@ -11,7 +11,6 @@ Features:
 - 辨证论治
 """
 
-from tcm_agent.agent import TCMDiagnosisAgent
 from tcm_agent.knowledge import TCMKnowledgeBase 
 from tcm_agent.intention import IntentionRecognitionAgent, PatientInfoExtractor
 from tcm_agent.service.consultation import TCMConsultationSystem, ConsultationSession, SessionStatus
@@ -35,7 +34,6 @@ from tcm_agent.models import (
 __version__ = "0.1.0"
 
 __all__ = [
-    "TCMDiagnosisAgent",
     "TCMKnowledgeBase",
     "TCMKnowledgeGraph",
     "IntentionRecognitionAgent",
