@@ -1,3 +1,5 @@
+import trace
+import traceback
 from typing import Dict, List, Any, Optional, Tuple
 import asyncio
 import json
@@ -142,7 +144,6 @@ class SessionManager:
 
             self._append_history(session_id, role="assistant", content=welcome)
             self._sync_agent_messages_from_redis(session_id)
-
             return session_id, welcome
 
     async def get_session(self, session_id: str) -> Optional[Any]:
@@ -218,10 +219,7 @@ class SessionManager:
         from tcm_agent.schema.consultation import ChatImages
         chat_images = None
         if imgs is not None:
-            if isinstance(imgs, dict):
-                chat_images = ChatImages(**imgs)
-            else:
-                chat_images = imgs
+            chat_images = ChatImages(**imgs)
 
         async with self._lock:
             tcmagent = self._sessions.get(session_id)
@@ -263,7 +261,7 @@ class SessionManager:
             yield self._sse_format("done", "text", "", phase=str(phase), is_complete=str(is_complete))
 
         except Exception as e:
-            logger.error(f"Chat stream error: {e}")
+            logger.error(f"Chat stream error: {traceback.format_exc()}")
             yield self._sse_format("error", "text", f"处理消息时出现错误：{str(e)}")
 
     def _sse_format(self, event: str, msg_type: str, content: str, **extra) -> str:

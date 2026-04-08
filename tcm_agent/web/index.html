@@ -32,12 +32,45 @@
             <div class="patient-select-area" id="patientSelectArea">
                 <div class="patient-select-header">
                     <span class="patient-select-title">选择就诊人</span>
-                    <button class="patient-select-btn" id="patientSelectBtn" onclick="togglePatientSelect()">
-                        <span id="patientSelectText">请选择</span> ▼
-                    </button>
+                    <div class="patient-select-actions">
+                        <button class="patient-select-btn" id="patientSelectBtn" onclick="togglePatientSelect()">
+                            <span id="patientSelectText">请选择</span> ▼
+                        </button>
+                        <button class="patient-manual-toggle" id="manualPatientToggle" onclick="toggleManualPatientForm()">
+                            + 添加就诊人
+                        </button>
+                    </div>
                 </div>
                 <div class="patient-list" id="patientList">
                     <!-- 就诊人列表将动态生成 -->
+                </div>
+                <div class="patient-manual-form" id="manualPatientForm" style="display: none;">
+                    <div class="manual-form-grid">
+                        <label class="manual-form-item">
+                            <span>姓名</span>
+                            <input type="text" id="manualPatientName" placeholder="请输入姓名">
+                        </label>
+                        <label class="manual-form-item">
+                            <span>性别</span>
+                            <select id="manualPatientGender">
+                                <option value="">请选择性别</option>
+                                <option value="男">男</option>
+                                <option value="女">女</option>
+                            </select>
+                        </label>
+                        <label class="manual-form-item">
+                            <span>年龄</span>
+                            <input type="number" id="manualPatientAge" placeholder="请输入年龄" min="0" max="120">
+                        </label>
+                        <label class="manual-form-item">
+                            <span>手机号</span>
+                            <input type="tel" id="manualPatientPhone" placeholder="请输入手机号">
+                        </label>
+                    </div>
+                    <div class="manual-form-actions">
+                        <button class="btn btn-primary" onclick="saveManualPatient()">保存并使用</button>
+                        <button class="btn btn-secondary" onclick="cancelManualPatient()">取消</button>
+                    </div>
                 </div>
                 <div class="patient-selected-info" id="patientSelectedInfo" style="display: none;">
                     <div class="patient-name" id="selectedPatientName"></div>

@@ -68,10 +68,15 @@ function getDefaultPatients() {
 
 function renderPatientList() {
     const patientListEl = document.getElementById('patientList');
-    if (!patientListEl || patientsList.length === 0) return;
+    if (!patientListEl) return;
+
+    if (patientsList.length === 0) {
+        patientListEl.innerHTML = '<div class="patient-empty">暂无预设就诊人，可手动添加</div>';
+        return;
+    }
 
     patientListEl.innerHTML = patientsList.map(patient => `
-        <div class="patient-item" onclick="selectPatient(${patient.id})">
+        <div class="patient-item" onclick='selectPatient(${JSON.stringify(String(patient.id))})'>
             <div class="patient-item-name">${escapeHtml(patient.name)}</div>
             <div class="patient-item-detail">${patient.gender} | ${patient.age}岁 | ${patient.phone || ''}</div>
         </div>
@@ -85,14 +90,80 @@ function togglePatientSelect() {
     }
 }
 
-function selectPatient(patientId) {
-    selectedPatient = patientsList.find(p => p.id === patientId);
+function toggleManualPatientForm() {
+    const formEl = document.getElementById('manualPatientForm');
+    const toggleEl = document.getElementById('manualPatientToggle');
+    const patientListEl = document.getElementById('patientList');
+    if (!formEl || !toggleEl) return;
+
+    const isVisible = formEl.style.display === 'block';
+    formEl.style.display = isVisible ? 'none' : 'block';
+    toggleEl.textContent = isVisible ? '+ 添加就诊人' : '收起添加';
+    if (!isVisible && patientListEl) {
+        patientListEl.classList.remove('show');
+    }
+}
+
+function resetManualPatientForm() {
+    const fields = ['manualPatientName', 'manualPatientGender', 'manualPatientAge', 'manualPatientPhone'];
+    fields.forEach((id) => {
+        const field = document.getElementById(id);
+        if (field) field.value = '';
+    });
+}
+
+function cancelManualPatient() {
+    const formEl = document.getElementById('manualPatientForm');
+    const toggleEl = document.getElementById('manualPatientToggle');
+    if (formEl) formEl.style.display = 'none';
+    if (toggleEl) toggleEl.textContent = '+ 添加就诊人';
+    resetManualPatientForm();
+}
+
+function saveManualPatient() {
+    const name = document.getElementById('manualPatientName')?.value.trim() || '';
+    const gender = document.getElementById('manualPatientGender')?.value || '';
+    const ageValue = document.getElementById('manualPatientAge')?.value || '';
+    const phone = document.getElementById('manualPatientPhone')?.value.trim() || '';
+
+    if (!name || !gender || !ageValue || !phone) {
+        alert('请完整填写姓名、性别、年龄和手机号');
+        return;
+    }
+
+    const age = Number(ageValue);
+    if (!Number.isInteger(age) || age <= 0 || age > 120) {
+        alert('请输入正确的年龄');
+        return;
+    }
+
+    if (!/^1\d{10}$/.test(phone)) {
+        alert('请输入正确的 11 位手机号');
+        return;
+    }
+
+    const manualPatient = {
+        id: `manual-${Date.now()}`,
+        name,
+        gender,
+        age,
+        phone,
+        isManual: true
+    };
+
+    patientsList = [manualPatient, ...patientsList.filter(patient => !patient.isManual)];
+    renderPatientList();
+    cancelManualPatient();
+    selectedPatient = manualPatient;
+    applySelectedPatient();
+}
+
+function applySelectedPatient() {
     if (!selectedPatient) return;
 
     const patientListEl = document.getElementById('patientList');
     const patientSelectArea = document.getElementById('patientSelectArea');
     const patientSelectedInfo = document.getElementById('patientSelectedInfo');
-    const patientSelectText = document.getElementById('patientSelectText');
     const selectedPatientName = document.getElementById('selectedPatientName');
     const selectedPatientDetail = document.getElementById('selectedPatientDetail');
 
@@ -101,10 +172,17 @@ function selectPatient(patientId) {
     if (patientSelectedInfo) patientSelectedInfo.style.display = 'flex';
     if (selectedPatientName) selectedPatientName.textContent = selectedPatient.name;
     if (selectedPatientDetail) {
-        selectedPatientDetail.textContent = `${selectedPatient.gender} | ${selectedPatient.age}岁`;
+        selectedPatientDetail.textContent = `${selectedPatient.gender} | ${selectedPatient.age}岁 | ${selectedPatient.phone || ''}`;
     }
 
     newSession();
+}
+
+function selectPatient(patientId) {
+    selectedPatient = patientsList.find(p => String(p.id) === String(patientId));
+    if (!selectedPatient) return;
+
+    applySelectedPatient();
 }
 
 function changePatient() {
@@ -116,6 +194,7 @@ function changePatient() {
     if (patientSelectArea) patientSelectArea.style.display = 'block';
     if (patientSelectedInfo) patientSelectedInfo.style.display = 'none';
     if (patientSelectText) patientSelectText.textContent = '请选择';
+    cancelManualPatient();
 }
 
 function hideInputArea() {
@@ -138,6 +217,7 @@ function handleNewSessionBtn() {
     if (patientSelectedInfo) patientSelectedInfo.style.display = 'none';
     if (patientSelectText) patientSelectText.textContent = '请选择';
 
+    cancelManualPatient();
     hideInputArea();
 
     const messagesEl = document.getElementById('messages');

@@ -411,6 +411,92 @@ header p {
     font-size: 0.9rem;
 }
 
+.patient-select-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.patient-empty {
+    padding: 14px 12px;
+    color: #7c7c7c;
+    font-size: 0.9rem;
+    text-align: center;
+    background: #faf8f1;
+    border: 1px dashed #d8d1b2;
+    border-radius: 10px;
+}
+
+.patient-manual-toggle {
+    padding: 10px 14px;
+    border: 1px dashed var(--secondary-color);
+    background: #f7fbf6;
+    color: var(--secondary-color);
+    border-radius: 10px;
+    cursor: pointer;
+    font-size: 0.92rem;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.patient-manual-toggle:hover {
+    background: #eef7ec;
+    border-color: var(--primary-color);
+    color: var(--primary-color);
+}
+
+.patient-manual-form {
+    margin-top: 12px;
+    padding: 14px;
+    border-radius: 12px;
+    background: linear-gradient(180deg, #fcfdf7 0%, #f2f7ef 100%);
+    border: 1px solid #dde7d8;
+}
+
+.manual-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.manual-form-item {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.9rem;
+    color: #4e5f48;
+}
+
+.manual-form-item span {
+    font-weight: 600;
+}
+
+.manual-form-item input,
+.manual-form-item select {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d6decf;
+    border-radius: 10px;
+    background: white;
+    font: inherit;
+    color: var(--text-color);
+}
+
+.manual-form-item input:focus,
+.manual-form-item select:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(45, 90, 39, 0.08);
+}
+
+.manual-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 14px;
+}
+
 @media (max-width: 600px) {
     .container {
         padding: 10px;
@@ -432,6 +518,25 @@ header p {
 
     .session-info {
         flex-wrap: wrap;
+    }
+
+    .patient-select-actions {
+        width: 100%;
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .patient-manual-toggle,
+    .patient-select-btn {
+        width: 100%;
+    }
+
+    .manual-form-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .manual-form-actions {
+        flex-direction: column;
     }
 }
 
