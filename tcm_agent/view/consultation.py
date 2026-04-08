@@ -26,6 +26,7 @@ async def create_session(request: CreateSessionRequest = None):
         - welcome_message: 欢迎消息
     """
     session_id = request.session_id if request else None
+    session_id = "localtest"
     visit_type = request.visit_type if request else "first_visit"
     session_id, welcome = await session_manager.create_session(request.doctor_id, session_id, visit_type, request.patient_data)
     

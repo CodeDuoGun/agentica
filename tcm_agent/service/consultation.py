@@ -95,10 +95,8 @@ class TCMConsultationSystem:
     
     def __init__(
         self,
-        enable_stream: bool = True,
         max_turns: int = 50,
     ):
-        self.enable_stream = enable_stream
         self.max_turns = max_turns
         
         # 初始化知识库
@@ -406,10 +404,6 @@ class TCMConsultationSystem:
     async def _handle_general_consultation(self, message: str) -> str:
         """
         处理普通咨询（接入 RAG）
-
-        Returns:
-            - enable_stream=True: 返回完整文本（流式在 chat_stream 中处理）
-            - enable_stream=False: 直接返回文本
         """
         # RAG 检索
         kb_results = self.knowledge_base.search_similar(message, max_results=5)
