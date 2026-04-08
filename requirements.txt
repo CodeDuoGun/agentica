@@ -21,3 +21,5 @@ langfuse
 python-frontmatter
 fastapi
 uvicorn
+redis
+dynaconf

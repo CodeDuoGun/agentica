@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from tcm_agent.utils.response import general_response
 from log import logger
 from typing import Dict, Any, List, AsyncIterator
-from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, ChatResponse,Message
+from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, ChatResponse, Message
 from fastapi import FastAPI, HTTPException
 from tcm_agent.service.session import session_manager
 router = APIRouter()
@@ -26,6 +26,7 @@ async def create_session(request: CreateSessionRequest = None):
         - welcome_message: 欢迎消息
     """
     session_id = request.session_id if request else None
+    session_id = "localtest"
     visit_type = request.visit_type if request else "first_visit"
     session_id, welcome = await session_manager.create_session(request.doctor_id, session_id, visit_type, request.patient_data)
     
@@ -111,3 +112,14 @@ async def health_check():
         active_sessions=active_count,
         timestamp=datetime.now().isoformat()
     )
+
+
+@router.get("/patients", response_model=Dict[str, Any])
+async def get_patients():
+    """获取就诊人列表"""
+    patients = [
+        {"id": 1, "name": "张三", "gender": "男", "age": 35, "phone": "138****1234"},
+        {"id": 2, "name": "李四", "gender": "女", "age": 28, "phone": "139****5678"},
+        {"id": 3, "name": "王五", "gender": "男", "age": 45, "phone": "137****9012"}
+    ]
+    return {"patients": patients}

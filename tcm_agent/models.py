@@ -6,7 +6,7 @@ TCM Agent Data Models
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 
 class IntentionCategory(str, Enum):
@@ -81,12 +81,11 @@ class PulseType(str, Enum):
 
 class PatientInfo(BaseModel):
     """患者基本信息"""
-    name: Optional[str] = Field(None, description="姓名")
-    age: Optional[str] = Field(None, description="年龄")
-    gender: Optional[str] = Field(None, description="性别")
-    
-    class Config:
-        use_enum_values = True
+    name: Optional[str] = Field(None, description="姓名", validation_alias="name")
+    age: Optional[int] = Field(None, description="年龄", validation_alias="age")
+    gender: Optional[str] = Field(None, description="性别", validation_alias="gender")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PhysicalInfo(BaseModel):

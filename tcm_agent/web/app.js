@@ -7,6 +7,10 @@ let recordingSeconds = 0;
 let isProcessing = false;
 let currentAssistantMessage = null;
 
+// ==================== 就诊人管理 ====================
+let selectedPatient = null;
+let patientsList = [];
+
 // ==================== 图片上传状态 ====================
 const imageState = {
     tongue: { file: null, url: null, analysis: null },
@@ -18,7 +22,7 @@ let currentImageRequest = null;
 // ==================== 初始化 ====================
 document.addEventListener('DOMContentLoaded', () => {
     const messageInput = document.getElementById('messageInput');
-    
+
     if (messageInput) {
         messageInput.addEventListener('input', () => {
             messageInput.style.height = 'auto';
@@ -34,23 +38,236 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     initVoiceRecognition();
-    newSession();
+    loadPatients();
+    hideInputArea();
 });
+
+// ==================== 就诊人选择 ====================
+async function loadPatients() {
+    try {
+        const response = await fetch('/api/patients');
+        if (response.ok) {
+            const data = await response.json();
+            patientsList = data.patients || [];
+            renderPatientList();
+        }
+    } catch (error) {
+        console.error('获取就诊人列表失败:', error);
+        patientsList = getDefaultPatients();
+        renderPatientList();
+    }
+}
+
+function getDefaultPatients() {
+    return [
+        { id: 1, name: '张三', gender: '男', age: 35, phone: '138****1234' },
+        { id: 2, name: '李四', gender: '女', age: 28, phone: '139****5678' },
+        { id: 3, name: '王五', gender: '男', age: 45, phone: '137****9012' }
+    ];
+}
+
+function renderPatientList() {
+    const patientListEl = document.getElementById('patientList');
+    if (!patientListEl) return;
+
+    if (patientsList.length === 0) {
+        patientListEl.innerHTML = '<div class="patient-empty">暂无预设就诊人，可手动添加</div>';
+        return;
+    }
+
+    patientListEl.innerHTML = patientsList.map(patient => `
+        <div class="patient-item" onclick='selectPatient(${JSON.stringify(String(patient.id))})'>
+            <div class="patient-item-name">${escapeHtml(patient.name)}</div>
+            <div class="patient-item-detail">${patient.gender} | ${patient.age}岁 | ${patient.phone || ''}</div>
+        </div>
+    `).join('');
+}
+
+function togglePatientSelect() {
+    const patientListEl = document.getElementById('patientList');
+    if (patientListEl) {
+        patientListEl.classList.toggle('show');
+    }
+}
+
+function toggleManualPatientForm() {
+    const formEl = document.getElementById('manualPatientForm');
+    const toggleEl = document.getElementById('manualPatientToggle');
+    const patientListEl = document.getElementById('patientList');
+    if (!formEl || !toggleEl) return;
+
+    const isVisible = formEl.style.display === 'block';
+    formEl.style.display = isVisible ? 'none' : 'block';
+    toggleEl.textContent = isVisible ? '+ 添加就诊人' : '收起添加';
+    if (!isVisible && patientListEl) {
+        patientListEl.classList.remove('show');
+    }
+}
+
+function resetManualPatientForm() {
+    const fields = ['manualPatientName', 'manualPatientGender', 'manualPatientAge', 'manualPatientPhone'];
+    fields.forEach((id) => {
+        const field = document.getElementById(id);
+        if (field) field.value = '';
+    });
+}
+
+function cancelManualPatient() {
+    const formEl = document.getElementById('manualPatientForm');
+    const toggleEl = document.getElementById('manualPatientToggle');
+    if (formEl) formEl.style.display = 'none';
+    if (toggleEl) toggleEl.textContent = '+ 添加就诊人';
+    resetManualPatientForm();
+}
+
+function saveManualPatient() {
+    const name = document.getElementById('manualPatientName')?.value.trim() || '';
+    const gender = document.getElementById('manualPatientGender')?.value || '';
+    const ageValue = document.getElementById('manualPatientAge')?.value || '';
+    const phone = document.getElementById('manualPatientPhone')?.value.trim() || '';
+
+    if (!name || !gender || !ageValue || !phone) {
+        alert('请完整填写姓名、性别、年龄和手机号');
+        return;
+    }
+
+    const age = Number(ageValue);
+    if (!Number.isInteger(age) || age <= 0 || age > 120) {
+        alert('请输入正确的年龄');
+        return;
+    }
+
+    if (!/^1\d{10}$/.test(phone)) {
+        alert('请输入正确的 11 位手机号');
+        return;
+    }
+
+    const manualPatient = {
+        id: `manual-${Date.now()}`,
+        name,
+        gender,
+        age,
+        phone,
+        isManual: true
+    };
+
+    patientsList = [manualPatient, ...patientsList.filter(patient => !patient.isManual)];
+    renderPatientList();
+    cancelManualPatient();
+    selectedPatient = manualPatient;
+    applySelectedPatient();
+}
+
+function applySelectedPatient() {
+    if (!selectedPatient) return;
+
+    const patientListEl = document.getElementById('patientList');
+    const patientSelectArea = document.getElementById('patientSelectArea');
+    const patientSelectedInfo = document.getElementById('patientSelectedInfo');
+    const selectedPatientName = document.getElementById('selectedPatientName');
+    const selectedPatientDetail = document.getElementById('selectedPatientDetail');
+
+    if (patientListEl) patientListEl.classList.remove('show');
+    if (patientSelectArea) patientSelectArea.style.display = 'none';
+    if (patientSelectedInfo) patientSelectedInfo.style.display = 'flex';
+    if (selectedPatientName) selectedPatientName.textContent = selectedPatient.name;
+    if (selectedPatientDetail) {
+        selectedPatientDetail.textContent = `${selectedPatient.gender} | ${selectedPatient.age}岁 | ${selectedPatient.phone || ''}`;
+    }
+
+    newSession();
+}
+
+function selectPatient(patientId) {
+    selectedPatient = patientsList.find(p => String(p.id) === String(patientId));
+    if (!selectedPatient) return;
+
+    applySelectedPatient();
+}
+
+function changePatient() {
+    selectedPatient = null;
+    const patientSelectArea = document.getElementById('patientSelectArea');
+    const patientSelectedInfo = document.getElementById('patientSelectedInfo');
+    const patientSelectText = document.getElementById('patientSelectText');
+
+    if (patientSelectArea) patientSelectArea.style.display = 'block';
+    if (patientSelectedInfo) patientSelectedInfo.style.display = 'none';
+    if (patientSelectText) patientSelectText.textContent = '请选择';
+    cancelManualPatient();
+}
+
+function hideInputArea() {
+    const inputArea = document.querySelector('.input-area');
+    if (inputArea) inputArea.style.display = 'none';
+}
+
+function showInputArea() {
+    const inputArea = document.querySelector('.input-area');
+    if (inputArea) inputArea.style.display = 'block';
+}
+
+function handleNewSessionBtn() {
+    selectedPatient = null;
+    const patientSelectArea = document.getElementById('patientSelectArea');
+    const patientSelectedInfo = document.getElementById('patientSelectedInfo');
+    const patientSelectText = document.getElementById('patientSelectText');
+
+    if (patientSelectArea) patientSelectArea.style.display = 'block';
+    if (patientSelectedInfo) patientSelectedInfo.style.display = 'none';
+    if (patientSelectText) patientSelectText.textContent = '请选择';
+
+    cancelManualPatient();
+    hideInputArea();
+
+    const messagesEl = document.getElementById('messages');
+    if (messagesEl) {
+        messagesEl.innerHTML = `
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">🩺</div>
+                <p>欢迎使用中医智能问诊系统</p>
+                <span>请先选择就诊人，然后开始咨询</span>
+            </div>
+        `;
+    }
+
+    const sessionIdEl = document.getElementById('sessionId');
+    if (sessionIdEl) sessionIdEl.textContent = '会话ID: --';
+
+    const visitTypeInfo = document.getElementById('visitTypeInfo');
+    if (visitTypeInfo) visitTypeInfo.textContent = '类型: --';
+
+    const phaseInfo = document.getElementById('phaseInfo');
+    if (phaseInfo) phaseInfo.textContent = '阶段: 欢迎';
+
+    currentSessionId = null;
+}
 
 // ==================== 会话管理 ====================
 async function newSession() {
     try {
-        const visitType = document.getElementById('visitTypeSelect')?.value || 'first_visit';
-
         clearAllImages();
         currentImageRequest = null;
         updateImageUploadArea(null);
 
         const doctorId = 1;
 
+        let visitType = 'first_visit';
+        let patientData = null;
+
+        if (selectedPatient) {
+            visitType = 'follow_up_visit';
+            patientData = {
+                name: selectedPatient.name,
+                gender: selectedPatient.gender,
+                age: selectedPatient.age
+            };
+        }
+
         const requestBody = {
             visit_type: visitType,
-            doctor_id: doctorId
+            doctor_id: doctorId,
+            patient_data: patientData
         };
 
         const response = await fetch('/api/sessions', {
@@ -81,6 +298,8 @@ async function newSession() {
 
         const emptyState = document.getElementById('emptyState');
         if (emptyState) emptyState.style.display = 'none';
+
+        showInputArea();
 
         if (data.welcome_message) {
             addMessage('assistant', data.welcome_message);

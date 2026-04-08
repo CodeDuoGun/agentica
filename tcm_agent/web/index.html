@@ -18,25 +18,72 @@
                 <span><span class="status-dot"></span> 在线</span>
                 <span id="sessionId">会话ID: --</span>
                 <span id="phaseInfo">阶段: 欢迎</span>
-                <span id="visitTypeInfo">类型: 初诊</span>
+                <span id="visitTypeInfo">类型: --</span>
             </div>
             <div style="display: flex; gap: 8px; align-items: center;">
-                <select id="visitTypeSelect" style="padding: 6px 10px; border-radius: 6px; border: 1px solid #ddd; font-size: 14px;">
-                    <option value="first_visit">初诊</option>
-                    <option value="follow_up_visit">复诊</option>
-                </select>
-                <button class="btn btn-secondary" onclick="newSession()">
+                <button class="btn btn-secondary" onclick="handleNewSessionBtn()">
                     <span>🆕</span> 新会话
                 </button>
             </div>
         </div>
 
         <div class="chat-container">
+            <!-- 就诊人选择区域 -->
+            <div class="patient-select-area" id="patientSelectArea">
+                <div class="patient-select-header">
+                    <span class="patient-select-title">选择就诊人</span>
+                    <div class="patient-select-actions">
+                        <button class="patient-select-btn" id="patientSelectBtn" onclick="togglePatientSelect()">
+                            <span id="patientSelectText">请选择</span> ▼
+                        </button>
+                        <button class="patient-manual-toggle" id="manualPatientToggle" onclick="toggleManualPatientForm()">
+                            + 添加就诊人
+                        </button>
+                    </div>
+                </div>
+                <div class="patient-list" id="patientList">
+                    <!-- 就诊人列表将动态生成 -->
+                </div>
+                <div class="patient-manual-form" id="manualPatientForm" style="display: none;">
+                    <div class="manual-form-grid">
+                        <label class="manual-form-item">
+                            <span>姓名</span>
+                            <input type="text" id="manualPatientName" placeholder="请输入姓名">
+                        </label>
+                        <label class="manual-form-item">
+                            <span>性别</span>
+                            <select id="manualPatientGender">
+                                <option value="">请选择性别</option>
+                                <option value="男">男</option>
+                                <option value="女">女</option>
+                            </select>
+                        </label>
+                        <label class="manual-form-item">
+                            <span>年龄</span>
+                            <input type="number" id="manualPatientAge" placeholder="请输入年龄" min="0" max="120">
+                        </label>
+                        <label class="manual-form-item">
+                            <span>手机号</span>
+                            <input type="tel" id="manualPatientPhone" placeholder="请输入手机号">
+                        </label>
+                    </div>
+                    <div class="manual-form-actions">
+                        <button class="btn btn-primary" onclick="saveManualPatient()">保存并使用</button>
+                        <button class="btn btn-secondary" onclick="cancelManualPatient()">取消</button>
+                    </div>
+                </div>
+                <div class="patient-selected-info" id="patientSelectedInfo" style="display: none;">
+                    <div class="patient-name" id="selectedPatientName"></div>
+                    <div class="patient-detail" id="selectedPatientDetail"></div>
+                    <button class="patient-change-btn" onclick="changePatient()">更换</button>
+                </div>
+            </div>
+
             <div class="messages" id="messages">
                 <div class="empty-state" id="emptyState">
                     <div class="empty-state-icon">🩺</div>
                     <p>欢迎使用中医智能问诊系统</p>
-                    <span>点击下方按钮开始咨询，或直接输入您的问题</span>
+                    <span>请先选择就诊人，然后开始咨询</span>
                 </div>
             </div>
 

@@ -18,23 +18,6 @@ from agentica.model.message import UserMessage
 from tcm_agent.models import IntentionResult, PatientInfo
 
 
-# 医疗相关关键词
-MEDICAL_KEYWORDS = [
-    "症状", "不舒服", "疼", "痛", "痒", "发烧", "咳嗽", "感冒", "头痛", "头晕",
-    "失眠", "睡眠", "消化", "胃", "肚子", "腹泻", "便秘", "恶心", "呕吐",
-    "血压", "血糖", "体质", "中医", "中药", "调理", "养生", "湿气", "气血",
-    "肝", "肾", "脾", "心", "肺", "妇科", "儿科", "皮肤", "骨科", "内科",
-    "门诊", "挂号", "就诊", "医生", "看病", "检查", "体检", "报告"
-]
-
-# 非医疗关键词
-NON_MEDICAL_KEYWORDS = [
-    "股票", "基金", "投资", "赚钱", "天气", "新闻", "娱乐", "明星", "电影",
-    "游戏", "电竞", "购物", "电商", "物流", "快递", "美食", "餐厅", "旅游",
-    "酒店", "机票", "装修", "房产", "汽车", "手机", "电脑", "编程", "代码"
-]
-
-
 class IntentionRecognitionAgent:
     """
     意图识别 Agent
@@ -178,9 +161,6 @@ class BasicInfoExtractor:
     - 姓名
     - 年龄
     - 性别
-    - 职业
-    - 既往病史
-    - 过敏史
     """
     
     SYSTEM_PROMPT = """你是一个专业的中医问诊信息收集助手。你的任务是从用户的描述中提取患者的基本信息。
@@ -189,10 +169,6 @@ class BasicInfoExtractor:
 1. 姓名：从称呼中提取
 2. 年龄：注意用户可能用"今年30"、"30岁"等形式描述
 3. 性别：先生/女士、他/她等代词
-4. 职业：注意用户可能提到的职业信息
-5. 既往病史：用户提到的既往疾病
-6. 过敏史：用户提到的过敏情况
-7. 体质：用户可能提到的体质特点
 
 ## 输出要求：
 返回一个JSON对象，包含患者的基本信息。如果某项信息未提及，设为null。
@@ -249,16 +225,6 @@ class BasicInfoExtractor:
             name=new.name or existing.name,
             age=new.age or existing.age,
             gender=new.gender or existing.gender,
-            # past_history=list(set(existing.past_history + new.past_history)),
-            # family_history=list(set(existing.family_history + new.family_history)),
-            # current_medications=list(set(existing.current_medications + new.current_medications)),
-            # allergies=list(set(existing.allergies + new.allergies)),
-            # marriage_history=list(set(existing.marriage_history + new.marriage_history)),
-            # personal_history=list(set(existing.personal_history + new.personal_history)),
-            # primary_symptoms=list(set(existing.primary_symptoms + new.primary_symptoms)),
-            # secondary_symptoms=list(set(existing.secondary_symptoms + new.secondary_symptoms)),
-
-            
         )
     
     def extract_sync(self, user_input: str, existing_info: Optional[PatientInfo] = None) -> PatientInfo:
