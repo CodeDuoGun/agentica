@@ -1,13 +1,10 @@
-import re
-import traceback
 from datetime import datetime
-from fastapi import APIRouter, Request
+from typing import Dict, Any, List
+
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from tcm_agent.utils.response import general_response
-from log import logger
-from typing import Dict, Any, List, AsyncIterator
-from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, ChatResponse, Message
-from fastapi import FastAPI, HTTPException
+
+from tcm_agent.schema.consultation import CreateSessionRequest, HealthResponse, SessionInfo, ChatRequest, Message, UserSessionResponse
 from tcm_agent.service.session import session_manager
 router = APIRouter()
 
@@ -16,26 +13,47 @@ router = APIRouter()
 async def create_session(request: CreateSessionRequest = None):
     """
     创建新会话
-    
-    Request:
-        - session_id: 可选的会话ID
-        - visit_type: 就诊类型 (first_visit / follow_up_visit)
-    
-    Returns:
-        - session_id: 会话ID
-        - welcome_message: 欢迎消息
     """
+    user_id = request.user_id if request else None
     session_id = request.session_id if request else None
-    session_id = "localtest"
     visit_type = request.visit_type if request else "first_visit"
-    session_id, welcome = await session_manager.create_session(request.doctor_id, session_id, visit_type, request.patient_data)
+    doctor_id = request.doctor_id if request else 1
+    patient_data = request.patient_data if request else None
+
+    session_id, welcome = await session_manager.create_session(
+        doctor_id=doctor_id,
+        user_id=user_id,
+        session_id=session_id,
+        visit_type=visit_type,
+        patient_data=patient_data,
+    )
     
     return {
+        "user_id": user_id or "",
         "session_id": session_id,
         "welcome_message": welcome,
         "visit_type": visit_type,
         "status": "active"
     }
+
+
+@router.get("/users/{user_id}/session", response_model=UserSessionResponse)
+async def get_user_session(user_id: str):
+    """获取用户最近会话及聊天历史"""
+    result = await session_manager.get_user_session(user_id)
+    if not result:
+        return UserSessionResponse(user_id=user_id, session=None, history=[])
+
+    session_info = SessionInfo(**result["session"])
+    history = [
+        Message(
+            role=msg["role"],
+            content=msg["content"],
+            timestamp=msg["timestamp"]
+        )
+        for msg in result["history"]
+    ]
+    return UserSessionResponse(user_id=user_id, session=session_info, history=history)
 
 
 @router.get("/sessions/{session_id}", response_model=SessionInfo)

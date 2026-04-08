@@ -1,4 +1,3 @@
-import trace
 import traceback
 from typing import Dict, List, Any, Optional, Tuple
 import asyncio
@@ -21,6 +20,7 @@ class SessionManager:
 
     SESSION_TTL = 7 * 24 * 60 * 60
     SESSION_IDS_KEY = "tcm:session:ids"
+    USER_SESSION_KEY_PREFIX = "tcm:user:{user_id}:current_session"
 
     def __init__(self):
         # key: session_id, value: TCMConsultationSystem
@@ -34,19 +34,27 @@ class SessionManager:
     def _metadata_key(self, session_id: str) -> str:
         return f"tcm:session:{session_id}:metadata"
 
-    def _touch_session_keys(self, session_id: str) -> None:
+    def _user_session_key(self, user_id: str) -> str:
+        return self.USER_SESSION_KEY_PREFIX.format(user_id=user_id)
+
+    def _touch_session_keys(self, session_id: str, user_id: Optional[str] = None) -> None:
         redis_tool.expire(self._history_key(session_id), self.SESSION_TTL)
         redis_tool.expire(self._metadata_key(session_id), self.SESSION_TTL)
         redis_tool.expire(self.SESSION_IDS_KEY, self.SESSION_TTL)
+        if user_id:
+            redis_tool.expire(self._user_session_key(user_id), self.SESSION_TTL)
 
     def _save_metadata(self, session_id: str, metadata: Dict[str, Any]) -> None:
         metadata_key = self._metadata_key(session_id)
+        user_id = metadata.get("user_id") or ""
         for key, value in metadata.items():
             if value is None:
                 value = ""
             redis_tool.hset(metadata_key, key, str(value))
         redis_tool.sadd(self.SESSION_IDS_KEY, session_id)
-        self._touch_session_keys(session_id)
+        if user_id:
+            redis_tool.set(self._user_session_key(user_id), session_id)
+        self._touch_session_keys(session_id, user_id=user_id or None)
 
     def _get_metadata(self, session_id: str) -> Dict[str, str]:
         metadata = redis_tool.hgetall(self._metadata_key(session_id))
@@ -60,7 +68,8 @@ class SessionManager:
         }
         redis_tool.rpush(self._history_key(session_id), json.dumps(message, ensure_ascii=False))
         redis_tool.sadd(self.SESSION_IDS_KEY, session_id)
-        self._touch_session_keys(session_id)
+        user_id = self._get_metadata(session_id).get("user_id") or None
+        self._touch_session_keys(session_id, user_id=user_id)
         return message
 
     def _load_history(self, session_id: str) -> List[Dict[str, Any]]:
@@ -76,6 +85,7 @@ class SessionManager:
     async def create_session(
         self,
         doctor_id: int,
+        user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         visit_type: str = "first_visit",
         patient_data: PatientInfo = None,
@@ -139,6 +149,7 @@ class SessionManager:
                 "status": "active",
                 "phase": ConsultationPhase.WELCOME.value,
                 "visit_type": visit_type,
+                "user_id": user_id or "",
             }
             self._save_metadata(session_id, metadata)
 
@@ -273,10 +284,30 @@ class SessionManager:
         data.update(extra)
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    async def get_history(self, session_id: str) -> List[Dict]:
-        """获取聊天历史"""
+    async def get_user_session(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """获取用户最近会话及历史"""
         async with self._lock:
-            return self._load_history(session_id)
+            session_id = redis_tool.get(self._user_session_key(user_id))
+            if not session_id:
+                return None
+
+            metadata = self._get_metadata(session_id)
+            if not metadata:
+                return None
+
+            history = self._load_history(session_id)
+            return {
+                "session": {
+                    "session_id": session_id,
+                    "user_id": metadata.get("user_id", ""),
+                    "status": metadata.get("status", "active"),
+                    "phase": metadata.get("phase", "UNKNOWN"),
+                    "created_at": metadata.get("created_at", ""),
+                    "visit_type": metadata.get("visit_type", ""),
+                    "message_count": len(history),
+                },
+                "history": history,
+            }
 
     async def get_session_info(self, session_id: str) -> Optional[Dict]:
         """获取会话信息"""
@@ -288,11 +319,18 @@ class SessionManager:
             history = self._load_history(session_id)
             return {
                 "session_id": session_id,
+                "user_id": metadata.get("user_id", ""),
                 "status": metadata.get("status", "active"),
                 "phase": metadata.get("phase", "UNKNOWN"),
                 "created_at": metadata.get("created_at", ""),
+                "visit_type": metadata.get("visit_type", ""),
                 "message_count": len(history),
             }
+
+    async def get_history(self, session_id: str) -> List[Dict]:
+        """获取聊天历史"""
+        async with self._lock:
+            return self._load_history(session_id)
 
     async def update_session(self, session_id: str, **updates: Any) -> Optional[Dict]:
         """更新会话元信息"""
@@ -309,9 +347,11 @@ class SessionManager:
             history = self._load_history(session_id)
             return {
                 "session_id": session_id,
+                "user_id": metadata.get("user_id", ""),
                 "status": metadata.get("status", "active"),
                 "phase": metadata.get("phase", "UNKNOWN"),
                 "created_at": metadata.get("created_at", ""),
+                "visit_type": metadata.get("visit_type", ""),
                 "message_count": len(history),
             }
 
@@ -319,11 +359,17 @@ class SessionManager:
         """删除会话"""
         async with self._lock:
             existed = bool(self._sessions.pop(session_id, None))
+            metadata = self._get_metadata(session_id)
+            user_id = metadata.get("user_id", "")
             metadata_exists = bool(redis_tool.exist(self._metadata_key(session_id)))
             history_exists = bool(redis_tool.exist(self._history_key(session_id)))
 
             redis_tool.delete(self._metadata_key(session_id), self._history_key(session_id))
             redis_tool.srem(self.SESSION_IDS_KEY, session_id)
+            if user_id:
+                current_session_id = redis_tool.get(self._user_session_key(user_id))
+                if current_session_id == session_id:
+                    redis_tool.delete(self._user_session_key(user_id))
 
             return existed or metadata_exists or history_exists
 

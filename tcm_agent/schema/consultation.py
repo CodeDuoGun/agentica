@@ -4,6 +4,7 @@ from tcm_agent.models import PatientInfo
 
 class CreateSessionRequest(BaseModel):
     """创建会话请求"""
+    user_id: Optional[str] = None
     session_id: Optional[str] = None
     visit_type: Optional[str] = "first_visit"  # first_visit / follow_up_visit
     doctor_id: Optional[int] = 1
@@ -32,9 +33,11 @@ class Message(BaseModel):
 class SessionInfo(BaseModel):
     """会话信息"""
     session_id: str
+    user_id: str = ""
     status: str
     phase: str
     created_at: str
+    visit_type: str = ""
     message_count: int
 
 
@@ -52,3 +55,10 @@ class HealthResponse(BaseModel):
     status: str
     active_sessions: int
     timestamp: str
+
+
+class UserSessionResponse(BaseModel):
+    """用户最近会话响应"""
+    user_id: str
+    session: Optional[SessionInfo] = None
+    history: List[Message] = Field(default_factory=list)

@@ -1,5 +1,6 @@
 // ==================== 状态管理 ====================
 let currentSessionId = null;
+let currentUserId = null;
 let isRecording = false;
 let recognition = null;
 let recordingTimer = null;
@@ -20,7 +21,7 @@ const imageState = {
 let currentImageRequest = null;
 
 // ==================== 初始化 ====================
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     const messageInput = document.getElementById('messageInput');
 
     if (messageInput) {
@@ -37,12 +38,71 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    currentUserId = getOrCreateUserId();
+    updateUserInfo();
     initVoiceRecognition();
     loadPatients();
     hideInputArea();
+    await restoreUserSession();
 });
 
-// ==================== 就诊人选择 ====================
+function getOrCreateUserId() {
+    const storageKey = 'tcm_user_id';
+    let userId = localStorage.getItem(storageKey);
+    if (!userId) {
+        userId = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        localStorage.setItem(storageKey, userId);
+    }
+    return userId;
+}
+
+function updateUserInfo() {
+    const sessionIdEl = document.getElementById('sessionId');
+    if (!sessionIdEl) return;
+
+    if (currentSessionId) {
+        sessionIdEl.textContent = `用户ID: ${currentUserId} | 会话ID: ${currentSessionId.slice(0, 8)}...`;
+    } else {
+        sessionIdEl.textContent = `用户ID: ${currentUserId} | 会话ID: --`;
+    }
+}
+
+async function restoreUserSession() {
+    if (!currentUserId) return;
+
+    try {
+        const response = await fetch(`/api/users/${currentUserId}/session`);
+        if (!response.ok) return;
+
+        const data = await response.json();
+        if (!data.session) return;
+
+        currentSessionId = data.session.session_id;
+        updateUserInfo();
+
+        const phaseInfo = document.getElementById('phaseInfo');
+        if (phaseInfo) {
+            phaseInfo.textContent = `阶段: ${getPhaseName(data.session.phase)}`;
+        }
+
+        const visitTypeInfo = document.getElementById('visitTypeInfo');
+        if (visitTypeInfo) {
+            const visitType = data.session.visit_type || '';
+            visitTypeInfo.textContent = `类型: ${visitType === 'follow_up_visit' ? '复诊' : visitType === 'first_visit' ? '初诊' : '--'}`;
+        }
+
+        const messagesEl = document.getElementById('messages');
+        if (messagesEl) {
+            messagesEl.innerHTML = '';
+        }
+
+        (data.history || []).forEach(msg => addMessage(msg.role, msg.content));
+        showInputArea();
+    } catch (error) {
+        console.error('恢复用户会话失败:', error);
+    }
+}
+
 async function loadPatients() {
     try {
         const response = await fetch('/api/patients');
@@ -231,10 +291,8 @@ function handleNewSessionBtn() {
         `;
     }
 
-    const sessionIdEl = document.getElementById('sessionId');
-    if (sessionIdEl) sessionIdEl.textContent = '会话ID: --';
-
-    const visitTypeInfo = document.getElementById('visitTypeInfo');
+    currentSessionId = null;
+    updateUserInfo();
     if (visitTypeInfo) visitTypeInfo.textContent = '类型: --';
 
     const phaseInfo = document.getElementById('phaseInfo');
@@ -265,6 +323,7 @@ async function newSession() {
         }
 
         const requestBody = {
+            user_id: currentUserId,
             visit_type: visitType,
             doctor_id: doctorId,
             patient_data: patientData
@@ -280,11 +339,7 @@ async function newSession() {
 
         const data = await response.json();
         currentSessionId = data.session_id;
-
-        const sessionIdEl = document.getElementById('sessionId');
-        if (sessionIdEl) {
-            sessionIdEl.textContent = `会话ID: ${currentSessionId.slice(0, 8)}...`;
-        }
+        updateUserInfo();
 
         const messagesEl = document.getElementById('messages');
         if (messagesEl) {
