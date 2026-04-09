@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class IntentionCategory(str, Enum):
     """意图大类"""
-    GENERAL_MEDICAL = "general_medical"      # 普通医疗问题咨询（接入RAG）
+    DOCTOR_SPECIFIC_MEDICAL = "doctor_specific_medical"  # 医生指定领域的医疗问题咨询
+    NODOCTOR_SPECIFIC_MEDICAL = "nodoctor_specific_medical"  # 非医生指定领域的普通医疗问题咨询
     CONSULTATION = "consultation"             # 问诊咨询（多轮问答收集信息）
     OTHER = "other"                          # 其他问题处理
     UNKNOWN = "unknown"                       # 未知
@@ -434,9 +435,8 @@ class IntentionResult(BaseModel):
     follow_up_question: Optional[str] = Field(None, description="追问问题")
     should_forward_to_consultation: bool = Field(False, description="是否需要进入问诊流程")
     hospital_referral: Optional[str] = Field(None, description="推荐就诊地址")
-    
-    class Config:
-        use_enum_values = True
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class KGQueryResult(BaseModel):

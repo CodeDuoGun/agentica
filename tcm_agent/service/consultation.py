@@ -50,7 +50,7 @@ from tcm_agent.knowledge import TCMKnowledgeBase
 from tcm_agent.intention import IntentionRecognitionAgent
 from tcm_agent.schema.consultation import ChatImages
 from log import logger
-from tcm_agent.constants import consultation_completed
+from tcm_agent.constants import consultation_completed, non_medical_response, nodoctor_specific_medical_response
 
 
 class SessionStatus(Enum):
@@ -335,7 +335,12 @@ class TCMConsultationSystem:
             # ========== 步骤2：根据意图路由（流式） ==========
             category = get_enum_value(intention_result.category)
 
-            if category == "general_medical":
+            if category == "nodoctor_specific_medical":
+                # 非医生指定领域医疗问题 -> 返回固定话术
+                async for chunk in self._handle_nodoctor_specific_medical_stream():
+                    yield chunk
+
+            elif category == "doctor_specific_medical":
                 async for chunk in self._handle_general_consultation_stream(message):
                     yield chunk
 
@@ -384,8 +389,12 @@ class TCMConsultationSystem:
         """根据意图路由到不同的 Agent"""
         category = get_enum_value(intention.category)
 
-        if category == "general_medical":
-            # 普通医疗咨询 -> RAG 检索
+        if category == "nodoctor_specific_medical":
+            # 非医生指定领域医疗问题 -> 返回固定话术
+            return nodoctor_specific_medical_response
+
+        elif category == "doctor_specific_medical":
+            # 医生指定领域医疗问题 -> RAG 检索
             return await self._handle_general_consultation(message)
 
         elif category == "consultation":
@@ -416,15 +425,11 @@ class TCMConsultationSystem:
 
         # 构建提示
         prompt = f"用户问题：{message}\n\n{context}\n请根据以上信息回答用户的问题。"
-
         # 调用 Agent
         result = await self.general_consultation_agent.run(prompt)
-
         response = result.content if hasattr(result, 'content') else str(result)
-
         # 添加就医建议
         response += f"\n\n💡 如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
-
         return response
 
     async def _handle_general_consultation_stream(self, message: str) -> AsyncIterator[str]:
@@ -456,21 +461,32 @@ class TCMConsultationSystem:
         if full_response:
             yield f"\n\n💡 如需进一步诊疗，建议您前往【{self.HOSPITAL_REFERRAL}】进行详细咨询。"
 
-        # 保存完整响应到会话
         self.current_session.messages.append({
             "role": "assistant",
             "content": full_response,
             "timestamp": datetime.now().isoformat(),
         })
 
-    async def _handle_other_question(self, message: str) -> str:
-        """处理其他问题"""
-        # TODO 调用agent进行处理
-        return f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
 
     async def _handle_other_question_stream(self, message: str) -> AsyncIterator[str]:
         """处理其他问题 - 流式版本"""
-        response = f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
+        response = f"您的问题是「{message}」，{non_medical_response}"
+
+        # 简单模拟打字效果
+        for char in response:
+            yield char
+            await asyncio.sleep(0.01)
+
+        # 保存完整响应
+        self.current_session.messages.append({
+            "role": "assistant",
+            "content": response,
+            "timestamp": datetime.now().isoformat(),
+        })
+
+    async def _handle_nodoctor_specific_medical_stream(self) -> AsyncIterator[str]:
+        """处理非医生指定领域医疗问题 - 流式版本"""
+        response = nodoctor_specific_medical_response
 
         # 简单模拟打字效果
         for char in response:
@@ -995,7 +1011,7 @@ class TCMConsultationSystem:
     async def _handle_other_question(self, message: str) -> str:
         """处理其他问题"""
         # TODO 调用agent进行处理
-        return f"您的问题是「{message}」，这个问题我暂时无法回答。建议您：\n1. 咨询具体的中医健康问题\n2. 描述您的症状进行问诊"
+        return f"您的问题是「{message}」，{non_medical_response}"
     
     async def _generate_diagnosis(self) -> DiagnosisInfo:
         """生成诊断结果"""

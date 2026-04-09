@@ -21,48 +21,57 @@ from tcm_agent.models import IntentionResult, PatientInfo
 class IntentionRecognitionAgent:
     """
     意图识别 Agent
-    
+
     根据用户输入识别意图类别：
-    1. general_medical - 普通医疗问题咨询（用药咨询、病种咨询等）→ 主动推荐挂号地址
-    2. consultation - 问诊咨询（症状描述等）→ 进入问诊流程
-    3. non_medical - 非医疗咨询 → 不回复
+    1. doctor_specific_medical - 医生指定领域的医疗问题咨询 → 回答问题 + 推荐挂号
+    2. nodoctor_specific_medical - 非医生指定领域的普通医疗问题咨询 → 回答问题 + 推荐挂号
+    3. consultation - 问诊咨询（症状描述等）→ 进入问诊流程
+    4. other - 非医疗咨询 → 不回复
     """
-    
+
     SYSTEM_PROMPT = """你是一个专业的中医问诊系统意图识别专家。你的任务是根据用户的输入准确识别其意图类型。
 
 ## 意图分类体系：
 
-### 1. general_medical（普通医疗问题咨询）
+### 1. doctor_specific_medical（医生指定领域的医疗问题咨询）
+- 问题属于当前医生专长领域内的医疗咨询
+- 如：该医生擅长皮肤科，用户咨询皮肤相关问题
+- → 处理方式：回答问题 + 主动推荐挂号地址
+
+### 2. nodoctor_specific_medical（非医生指定领域的普通医疗问题咨询）
 - 用药咨询：如"这个药怎么吃"、"中药有什么副作用"
 - 病种咨询：如"高血压要注意什么"、"糖尿病饮食"
 - 检查结果咨询：如"我的体检报告怎么看"
 - 预防保健：如"怎么提高免疫力"、"春天养生"
-→ 处理方式：回答问题 + 主动推荐挂号地址
+- 问题不属于当前医生专长领域
+- → 处理方式：不回复
 
-### 2. consultation（问诊咨询）
+### 3. consultation（问诊咨询）
 - 症状描述：如"我最近头疼"、"失眠很久了"
 - 身体不适：如"感觉浑身没力气"、"胃口不好"
 - 既往病史：如"我有胃病，现在又犯了"
 - 要求诊断：如"帮我看看是什么问题"
-→ 处理方式：进入问诊流程
+- → 处理方式：进入问诊流程
 
-### 3. other（其他问题）
+### 4. other（其他问题）
 - 完全无关话题：如天气、股票、新闻、游戏等
 - 政治敏感话题
 - 纯粹闲聊无医疗诉求
-→ 处理方式：不回复
+- → 处理方式：不回复
 
 ## 识别策略：
 1. 首先判断是否涉及医疗健康领域
 2. 如果是医疗领域，判断是咨询类还是问诊类
-3. 咨询类：一般有明确的问答结构，问题相对独立
-4. 问诊类：涉及症状描述，需要多轮问答收集信息
-5. 考虑上下文：如果用户正在描述症状，优先归类为问诊
+3. 咨询类：需要判断是否属于医生指定领域
+   - 属于医生专长领域 → doctor_specific_medical
+   - 不属于医生专长领域 → nodoctor_specific_medical
+4. 问诊类：涉及症状描述，需要多轮问答收集信息 → consultation
+5. 考虑上下文：如果用户正在描述症状，优先归类为 consultation
 
 ## 输出要求：
 返回JSON格式的意图识别结果：
 {
-    "category": "general_medical" | "consultation" | "other",
+    "category": "doctor_specific_medical" | "nodoctor_specific_medical" | "consultation" | "other",
     "intention": "具体意图描述",
     "confidence": 0.0-1.0,
     "entities": {提取的实体信息},
