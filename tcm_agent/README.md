@@ -111,20 +111,6 @@ python -m tcm_agent.examples.cli_demo
 - `GOODBYE` - 结束对话
 - `OTHER` - 其他意图
 
-### SyndromeType (证型)
-
-- `YIN_DEFICIENCY` - 阴虚
-- `YANG_DEFICIENCY` - 阳虚
-- `QI_DEFICIENCY` - 气虚
-- `BLOOD_DEFICIENCY` - 血虚
-- `PHLEGM_DAMP` - 痰湿
-- `BLOOD_STASIS` - 血瘀
-- `QI_STAGNATION` - 气郁
-- `HEAT` - 热证
-- `COLD` - 寒证
-- `EXCESS` - 实证
-- `DEFICIENCY` - 虚证
-
 ## 知识图谱
 
 内置中医知识图谱包含：

@@ -1,5 +1,5 @@
 from typing import Dict, Any, Optional, List, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from tcm_agent.models import PatientInfo
 
 class CreateSessionRequest(BaseModel):
