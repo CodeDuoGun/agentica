@@ -173,21 +173,6 @@ class TreatmentPlan(BaseModel):
         use_enum_values = True
 
 
-class SyndromeType(str, Enum):
-    """证型"""
-    YIN_DEFICIENCY = "yin_deficiency"         # 阴虚
-    YANG_DEFICIENCY = "yang_deficiency"       # 阳虚
-    QI_DEFICIENCY = "qi_deficiency"           # 气虚
-    BLOOD_DEFICIENCY = "blood_deficiency"     # 血虚
-    DAMP_HEAT = "damp_heat"                   # 湿热
-    PHLEGM_DAMP = "phlegm_damp"               # 痰湿
-    QI_STAGNATION = "qi_stagnation"           # 气滞
-    BLOOD_STASIS = "blood_stasis"             # 血瘀
-    COLD_CONSTRICTION = "cold_constriction"   # 寒凝
-    HEAT_TOXIN = "heat_toxin"                 # 热毒
-    OTHER = "other"                           # 其他
-
-
 class SymptomInfo(BaseModel):
     """症状信息"""
     name: str = Field(..., description="症状名称")
