@@ -213,21 +213,6 @@ class TCMConsultationSystem:
         """启动新会话"""
         self.state = ConsultationState(session_id=session_id)
         
-        # 设置就诊类型
-        try:
-            self.state.visit_type = ConsultationVisitType(visit_type)
-        except ValueError:
-            self.state.visit_type = ConsultationVisitType.FIRST_VISIT
-        
-        # 初始化槽位状态
-        self.state.pending_slots = list(REQUIRED_SLOTS)
-        for slot_def in CONSULTATION_SLOTS_DEFINITION:
-            if slot_def["key"] not in self.state.slot_status:
-                self.state.slot_status[slot_def["key"]] = SlotCollectionStatus(
-                    key=slot_def["key"],
-                    status=SlotStatus.PENDING if slot_def["key"] in self.state.pending_slots else SlotStatus.SKIPPED
-                )
-        
         self.current_session = ConsultationSession(
             session_id=session_id,
             state=self.state,
@@ -668,11 +653,9 @@ class TCMConsultationSystem:
         }
 
         pending_slots = [
-            k for k in REQUIRED_SLOTS
-            if state.slot_status.get(k, SlotCollectionStatus(key=k)).status != SlotStatus.COLLECTED
+            f"{k[0]}, 槽位含义:{k[2]}" for k in state.pending_slots if k[1] is True
         ]
 
-        # 3️⃣ 构造 prompt
         prompt = f"""
     你是中医问诊助手，需要通过对话完成患者信息采集
     建议继续询问的内容是：{intention.follow_up_question}
@@ -683,13 +666,14 @@ class TCMConsultationSystem:
     【还需要收集的槽位】
     {pending_slots}
 
+
     【用户输入】
     {message}
 
     请完成：
     1. 从用户输入中提取可以更新的槽位
     2. 更新槽位（只填有把握的）
-    3. 生成一句自然的追问（优先收集未完成槽位）
+    3. 生成一句自然的追问（优先收集未完成且必须填充的槽位）
     4. 每次针对某个部位或者某一个症状进行询问时，可以1到2个问题，其余情况禁止一次询问多个问题
 
     输出结构化结果
@@ -973,25 +957,6 @@ class TCMConsultationSystem:
         return False
     
 
-    def _get_next_pending_slot(self) -> Optional[str]:
-        """获取下一个待收集的槽位"""
-        state = self.current_session.state
-        
-        # 首先检查当前正在收集的槽位
-        if state.current_slot_key:
-            slot_status = state.slot_status.get(state.current_slot_key)
-            if slot_status and slot_status.status == SlotStatus.PENDING:
-                return state.current_slot_key
-        
-        # 遍历所有槽位定义
-        for slot_def in CONSULTATION_SLOTS_DEFINITION:
-            key = slot_def["key"]
-            slot_status = state.slot_status.get(key)
-            if slot_status and slot_status.status == SlotStatus.PENDING and key in state.pending_slots:
-                return key
-        
-        return None
-    
     async def _handle_other_question(self, message: str) -> str:
         """处理其他问题"""
         # TODO 调用agent进行处理

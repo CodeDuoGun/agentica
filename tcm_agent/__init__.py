@@ -12,7 +12,7 @@ Features:
 """
 
 from tcm_agent.knowledge import TCMKnowledgeBase 
-from tcm_agent.intention import IntentionRecognitionAgent, PatientInfoExtractor
+from tcm_agent.intention import IntentionRecognitionAgent 
 from tcm_agent.service.consultation import TCMConsultationSystem, ConsultationSession, SessionStatus
 from tcm_agent.models import (
     SymptomInfo,
@@ -37,7 +37,6 @@ __all__ = [
     "TCMKnowledgeGraph",
     "IntentionRecognitionAgent",
     "SymptomExtractor",
-    "PatientInfoExtractor",
     "TCMConsultationSystem",
     "ConsultationSession",
     "SessionStatus",

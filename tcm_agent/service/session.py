@@ -5,8 +5,8 @@ import asyncio
 import json
 import uuid
 from datetime import datetime
+from tcm_agent.utils.doctorconfig import get_digital_doctor_config
 from tcm_agent.models import (
-    CONSULTATION_SLOTS_DEFINITION,
     SlotCollectionStatus, SlotStatus,
     PatientInfo,
     ConsultationPhase,
@@ -99,15 +99,31 @@ class SessionManager:
 
             state = tcmagent.current_session.state
             state.pending_slots = []
-            for slot_def in CONSULTATION_SLOTS_DEFINITION:
-                key = slot_def["key"]
-                is_required = slot_def["required"]
-                state.slot_status[key] = SlotCollectionStatus(
-                    key=key,
-                    status=SlotStatus.PENDING if is_required else SlotStatus.SKIPPED,
-                )
-                if is_required:
-                    state.pending_slots.append(key)
+
+            if patient_data is None:
+                patient_data = PatientInfo()
+
+            state.doctor_config = get_digital_doctor_config(
+                doctor_id,
+                patient_data.gender,
+                patient_data.age,
+            )
+            # 初始化槽位
+            slots_config = state.doctor_config.slots or {}
+            for slot_type, slot_defs in slots_config.items():
+                for slot_def in slot_defs:
+                    key = slot_def["name"]
+                    is_required = slot_def["required"]
+                    definition = slot_def["definition"]
+
+                    if patient_data.gender == "女" and key == "ask_menstruation":
+                        is_required = True
+
+                    state.slot_status[key] = SlotCollectionStatus(
+                        key=key,
+                        status=SlotStatus.PENDING if is_required else SlotStatus.SKIPPED,
+                    )
+                    state.pending_slots.append((key, is_required, definition))
 
             state.current_slot_key = None
             state.consultation_phase = ConsultationPhase.CONSULTATION
@@ -116,6 +132,7 @@ class SessionManager:
 
             if visit_type == "follow_up_visit":
                 welcome += "请问您本次复诊需要咨询什么内容呢？"
+                # 统一由 collected_slots 管控槽位状态, 病人基本信息固定
                 state.patient_info = patient_data
                 state.pending_slots = [s for s in state.pending_slots if s not in ["name", "gender", "age"]]
                 state.collected_slots["name"] = patient_data.name
@@ -127,11 +144,7 @@ class SessionManager:
 
             logger.debug(f"state.pending_slots: {state.pending_slots}")
             logger.debug(f"slot_status: {state.slot_status}")
-            try:
-                tcmagent.current_session.state.visit_type = ConsultationVisitType(visit_type)
-            except ValueError:
-                tcmagent.current_session.state.visit_type = ConsultationVisitType.FIRST_VISIT
-
+            tcmagent.current_session.state.visit_type = visit_type 
             self._sessions[session_id] = tcmagent
 
             metadata = {
