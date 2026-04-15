@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from agentica import Agent, QwenChat 
 from agentica.model.message import UserMessage
 
-from tcm_agent.models import IntentionResult, PatientInfo
+from tcm_agent.models import IntentionResult 
 
 
 class IntentionRecognitionAgent:
@@ -151,97 +151,3 @@ class IntentionRecognitionAgent:
                 return loop.run_until_complete(self.recognize(user_input, context))
         except RuntimeError:
             return asyncio.run(self.recognize(user_input, context))
-
-
-class BasicInfoExtractor:
-    """
-    基本信息提取 Agent
-    
-    从用户输入中提取患者基本信息：
-    - 姓名
-    - 年龄
-    - 性别
-    """
-    
-    SYSTEM_PROMPT = """你是一个专业的中医问诊信息收集助手。你的任务是从用户的描述中提取患者的基本信息。
-
-## 提取规则：
-1. 姓名：从称呼中提取
-2. 年龄：注意用户可能用"今年30"、"30岁"等形式描述
-3. 性别：先生/女士、他/她等代词
-
-## 输出要求：
-返回一个JSON对象，包含患者的基本信息。如果某项信息未提及，设为null。
-
-请以JSON格式输出。
-"""
-    
-    def __init__(
-        self,
-        model: Optional[Any] = None,
-        temperature: float = 0.1
-    ):
-        self.model = model or QwenChat(id="qwen-plus", temperature=temperature)
-        self.agent = Agent(
-            model=self.model,
-            name="PatientInfoExtractor",
-            instructions=self.SYSTEM_PROMPT,
-            response_model=PatientInfo,
-            add_history_to_messages=False,
-        )
-    
-    async def extract(self, user_input: str, existing_info: Optional[PatientInfo] = None) -> PatientInfo:
-        """提取患者信息"""
-        prompt = f"用户描述：{user_input}"
-        
-        if existing_info:
-            existing_parts = []
-            if existing_info.name:
-                existing_parts.append(f"姓名：{existing_info.name}")
-            if existing_info.age:
-                existing_parts.append(f"年龄：{existing_info.age}")
-            if existing_info.gender:
-                existing_parts.append(f"性别：{existing_info.gender}")
-            if existing_parts:
-                prompt += f"\n已知信息：{', '.join(existing_parts)}"
-        
-        prompt += "\n\n请提取患者的基本信息。"
-        
-        result = await self.agent.run(prompt)
-        
-        merged_info = result.content
-        if existing_info:
-            merged_info = self._merge_patient_info(existing_info, merged_info)
-        
-        return merged_info
-    
-    def _merge_patient_info(
-        self,
-        existing: PatientInfo,
-        new: PatientInfo
-    ) -> PatientInfo:
-        """合并患者信息"""
-        return PatientInfo(
-            name=new.name or existing.name,
-            age=new.age or existing.age,
-            gender=new.gender or existing.gender,
-        )
-    
-    def extract_sync(self, user_input: str, existing_info: Optional[PatientInfo] = None) -> PatientInfo:
-        """同步版本"""
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self.extract(user_input, existing_info))
-                    return future.result()
-            else:
-                return loop.run_until_complete(self.extract(user_input, existing_info))
-        except RuntimeError:
-            return asyncio.run(self.extract(user_input, existing_info))
-
-
-# 向后兼容旧接口
-PatientInfoExtractor = BasicInfoExtractor

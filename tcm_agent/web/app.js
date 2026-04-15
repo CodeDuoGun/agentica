@@ -7,6 +7,38 @@ let recordingSeconds = 0;
 let isProcessing = false;
 let currentAssistantMessage = null;
 
+// ==================== 滚动控制 ====================
+const AUTO_SCROLL_THRESHOLD = 80;
+let autoScrollEnabled = true;
+
+function isMessagesNearBottom() {
+    const messagesEl = document.getElementById('messages');
+    if (!messagesEl) return true;
+    const distance = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+    return distance <= AUTO_SCROLL_THRESHOLD;
+}
+
+function scrollMessagesToBottom(force = false) {
+    const messagesEl = document.getElementById('messages');
+    if (!messagesEl) return;
+    if (!force && !autoScrollEnabled) return;
+
+    requestAnimationFrame(() => {
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    });
+}
+
+function initAutoScroll() {
+    const messagesEl = document.getElementById('messages');
+    if (!messagesEl) return;
+
+    messagesEl.addEventListener('scroll', () => {
+        autoScrollEnabled = isMessagesNearBottom();
+    }, { passive: true });
+
+    scrollMessagesToBottom(true);
+}
+
 // ==================== 就诊人管理 ====================
 let selectedPatient = null;
 let patientsList = [];
@@ -40,6 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initVoiceRecognition();
     loadPatients();
     hideInputArea();
+    initAutoScroll();
 });
 
 // ==================== 就诊人选择 ====================
@@ -496,7 +529,7 @@ function createAssistantMessage() {
     `;
 
     messagesContainer.appendChild(messageDiv);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    scrollMessagesToBottom();
 
     return messageDiv;
 }
@@ -510,7 +543,7 @@ function appendToAssistantMessage(text) {
     }
 
     const messagesContainer = document.getElementById('messages');
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    scrollMessagesToBottom();
 }
 
 function finalizeAssistantMessage() {
@@ -584,7 +617,7 @@ function addMessage(role, content) {
     `;
 
     messagesContainer.appendChild(messageDiv);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    scrollMessagesToBottom();
 
     if (imageRequest) {
         renderInlineUploadButtons(imageRequest);
@@ -685,13 +718,14 @@ function showTypingIndicator() {
         </div>
     `;
     messagesContainer.appendChild(indicator);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    scrollMessagesToBottom(true);
 }
 
 function hideTypingIndicator() {
     const indicator = document.getElementById('typingIndicator');
     if (indicator) {
         indicator.remove();
+        scrollMessagesToBottom();
     }
 }
 

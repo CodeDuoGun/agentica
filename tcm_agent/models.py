@@ -8,6 +8,8 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
+from tcm_agent.schema.doctorconfig import DigitalDoctorConfig
+
 
 class IntentionCategory(str, Enum):
     """意图大类"""
@@ -280,6 +282,7 @@ class ConsultationState(BaseModel):
     # 意图路由
     current_intent: IntentionCategory = Field(IntentionCategory.UNKNOWN, description="当前意图")
     consultation_phase: ConsultationPhase = Field(ConsultationPhase.WELCOME, description="问诊阶段")
+    doctor_config: DigitalDoctorConfig =  Field(default_factory=DigitalDoctorConfig, description="医生数字人配置信息")
     
     # 就诊信息
     visit_type: Optional[ConsultationVisitType] = Field(None, description="就诊类型")
